@@ -39,7 +39,7 @@ def index() -> tuple[str, int]:
     Здесь удобно менять текст, чтобы визуально подтверждать,
     что новая версия доехала до сервера (CI/CD работает).
     """
-    return "Hello from CD v3 (STAGE CHECK)", 200
+    return "Hello from CD v4 (PROD CHECK)", 200
 
 
 if __name__ == "__main__":
