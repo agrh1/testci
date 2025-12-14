@@ -1,0 +1,61 @@
+# ============================================================================
+# docker-compose.staging.yml — staging окружение.
+#
+# Отличия от prod:
+#   - теги образов :staging
+#   - контейнеры: *-staging
+#   - порт: 8001
+#   - НЕТ своего watchtower — использует тот же, что и prod.
+# ============================================================================
+
+services:
+
+  web-staging:
+    image: ghcr.io/<GITHUB_USER>/<REPO>-web:staging
+    container_name: cd-demo-web-staging
+
+    env_file:
+      - /opt/testci/.envs/.staging.env
+
+    environment:
+      FLASK_ENV: ${APP_ENV:-staging}
+
+    ports:
+      # порт staging-сервиса наружу: 8001
+      - "${APP_PORT:-8001}:8000"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+    labels:
+      # тот же label → watchtower будет обновлять staging вместе с prod
+      com.centurylinklabs.watchtower.enable: "true"
+
+
+  bot-staging:
+    image: ghcr.io/<GITHUB_USER>/<REPO>-bot:staging
+    container_name: cd-demo-bot-staging
+
+    command: ["python", "bot.py"]
+
+    env_file:
+      - /opt/testci/.envs/.staging.env
+
+    environment:
+      WEB_HOST: "web-staging"   # важно: обращаемся к web-staging, а не к web (prod)
+      WEB_PORT: "8000"
+      BOT_INTERVAL: "5"
+      APP_ENV: ${APP_ENV:-staging}
+
+    depends_on:
+      - web-staging
+
+    restart: unless-stopped
+
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
