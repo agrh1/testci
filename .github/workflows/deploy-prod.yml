@@ -37,6 +37,8 @@ jobs:
           context: .
           file: ./Dockerfile.web
           push: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.IMAGE_REPO }}:web-sha-${{ github.sha }}
             ${{ env.IMAGE_REPO }}:web-prod
@@ -49,6 +51,8 @@ jobs:
           context: .
           file: ./Dockerfile.bot
           push: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.IMAGE_REPO }}:bot-sha-${{ github.sha }}
             ${{ env.IMAGE_REPO }}:bot-prod

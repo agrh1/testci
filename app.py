@@ -1,12 +1,12 @@
 """
-Основное веб-приложение.
+app.py — web-сервис (Flask).
 
-Содержит:
-- Flask-приложение `app`
-- два HTTP-эндпоинта:
-  - GET /health — healthcheck для Docker/Watchtower/балансировщика
-  - GET /       — простая страница, по которой удобно проверять CD
+Эндпоинты:
+- GET /health  -> {"status": "ok"}   (для healthcheck'ов и мониторинга)
+- GET /status  -> {"status":"ok", "git_sha":"..."} (чтобы видеть версию релиза)
 """
+
+import os
 
 from flask import Flask, Response, jsonify
 
@@ -14,21 +14,26 @@ from flask import Flask, Response, jsonify
 # Имя модуля (__name__) нужно Flask'у для поиска шаблонов, статики и т.п.
 app = Flask(__name__)
 
+def get_git_sha() -> str:
+    """
+    Берём SHA коммита из переменной окружения.
+    Она задаётся на этапе сборки Docker-образа через ARG/ENV.
+    """
+    return os.getenv("GIT_SHA", "unknown").strip() or "unknown"
 
 @app.get("/health")
 def health() -> Response:
-    """
-    Healthcheck эндпоинт.
+    """Минимальный health endpoint: нужен для docker healthcheck и проверок."""
+    return jsonify(status="ok")
 
-    Используется:
-    - Docker healthcheck (см. docker-compose.yml)
-    - Watchtower, балансировщики, мониторинг.
-
-    Возвращает JSON с простым статусом.
+@app.get("/status")
+def status() -> Response:
     """
-    payload = {"status": "ok"}
-    # jsonify сам выставит правильный Content-Type и сериализует в JSON
-    return jsonify(payload), 200
+    Диагностический endpoint: показывает, какая версия (коммит) сейчас запущена.
+    Это удобно для staging/prod, чтобы не гадать, обновилось ли окружение.
+    """
+    return jsonify(status="ok", git_sha=get_git_sha())
+
 
 
 @app.get("/")

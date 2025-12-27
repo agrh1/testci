@@ -1,6 +1,6 @@
 # Dockerfile.bot
 # Образ для Telegram-бота (aiogram).
-# Важно: ставим только зависимости бота из requirements-bot.txt.
+# Важно: встраиваем GIT_SHA в ENV, чтобы /status мог показать версию.
 
 FROM python:3.12-slim
 
@@ -9,9 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Ставим только зависимости бота
 COPY requirements-bot.txt /app/requirements-bot.txt
 RUN pip install --no-cache-dir -r /app/requirements-bot.txt
 
 COPY . /app
 
+# Встраиваем commit SHA на этапе сборки
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 CMD ["python", "-u", "bot.py"]
+

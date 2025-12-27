@@ -1,6 +1,6 @@
 # Dockerfile.web
 # Образ для web-сервиса (Flask + gunicorn).
-# Важно: ставим только зависимости web из requirements-web.txt.
+# Важно: встраиваем GIT_SHA в ENV, чтобы /status мог показать версию.
 
 FROM python:3.12-slim
 
@@ -9,14 +9,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Сначала зависимости — для лучшего кеширования
+# Ставим только зависимости web
 COPY requirements-web.txt /app/requirements-web.txt
 RUN pip install --no-cache-dir -r /app/requirements-web.txt
 
-# Затем исходники
+# Копируем исходники
 COPY . /app
+
+# Встраиваем commit SHA на этапе сборки
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
 
 EXPOSE 8000
 
-# Запуск web
 CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+

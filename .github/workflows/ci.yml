@@ -73,6 +73,8 @@ jobs:
           file: ./Dockerfile.web
           push: false
           load: false
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: testci-web:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -84,6 +86,8 @@ jobs:
           file: ./Dockerfile.bot
           push: false
           load: false
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: testci-bot:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
