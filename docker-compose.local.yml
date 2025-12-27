@@ -1,95 +1,32 @@
-# ============================================================================
-# docker-compose.yml — окружение приложения.
-#
-# Сервисы:
-#   web        — Flask-приложение, обслуживаемое gunicorn
-#   bot        — воркер, выполняющий периодические запросы к web
-#   watchtower — агент CD (следит за обновлением образов и перезапускает сервисы)
-#
-# Особенности:
-#   - Образы приходят из GHCR (CI их туда пушит).
-#   - web и bot помечены label → watchtower обновляет только их.
-#   - watchtower работает в режиме pull-based CD.
-# ============================================================================
+# docker-compose.local.yml — локальный запуск (без CD/watchtower)
+# Поднимаем сервисы из текущего репозитория через build: .
 
 services:
-
   web:
-    # Образ из GHCR (собирается GitHub Actions)
-    image: ghcr.io/agrh1/testci-web:main
-    container_name: cd-demo-web
-
-    # Подгружаем переменные окружения из .env на сервере
+    build: .
+    container_name: testci-web-local
+    command: ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
     env_file:
-      - .envs/.prod.env
-
-    environment:
-      # для Flask (production/debug)
-      FLASK_ENV: ${APP_ENV:-production}
-
+      - .envs/.env.local
     ports:
-      # Внешний порт → внутренний 8000
-      - "${APP_PORT:-8000}:8000"
-
+      - "${WEB_PORT:-8000}:8000"
     restart: unless-stopped
 
-    # Docker healthcheck — очень важен!
-    # Watchtower сначала проверяет здоровье нового контейнера.
+    # Healthcheck: docker будет отмечать контейнер как healthy/unhealthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read(); print('ok')\""]
+      interval: 10s
       timeout: 3s
-      retries: 3
-
-    labels:
-      # Watchtower будет обновлять контейнер
-      com.centurylinklabs.watchtower.enable: "true"
-
+      retries: 5
+      start_period: 10s
 
   bot:
-    # Образ такой же, но команда другая
-    image: ghcr.io/agrh1/testci-bot:main
-    container_name: cd-demo-bot
-
-    command: ["python", "bot.py"]
-
+    build: .
+    container_name: testci-bot-local
+    command: ["python", "-u", "bot.py"]
     env_file:
-      - .envs/.prod.env
-
-    environment:
-      WEB_HOST: "web"
-      WEB_PORT: "8000"
-      BOT_INTERVAL: "5"
-      APP_ENV: ${APP_ENV:-production}
-
+      - .envs/.env.local
     depends_on:
-      - web
-
+      web:
+        condition: service_healthy
     restart: unless-stopped
-
-    labels:
-      com.centurylinklabs.watchtower.enable: "true"
-
-
-  watchtower:
-    # Версия 1.7.1 совместима с Docker API 1.44+
-    image: containrrr/watchtower:1.7.1
-    container_name: cd-demo-watchtower
-
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
-    environment:
-      # FIX для Docker 29+
-      DOCKER_API_VERSION: "1.44"
-
-      WATCHTOWER_POLL_INTERVAL: 300     # каждые 5 минут
-      WATCHTOWER_CLEANUP: "true"        # удалять старые образы
-      WATCHTOWER_ROLLBACK: "true"       # откат если контейнер не поднялся
-      WATCHTOWER_LABEL_ENABLE: "true"   # обновлять только помеченные контейнеры
-
-    restart: unless-stopped
-
-    labels:
-      # Сам watchtower обновлять НЕ нужно
-      com.centurylinklabs.watchtower.enable: "false"

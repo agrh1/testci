@@ -12,8 +12,11 @@
 
 Тесты для веб-приложения (app.py).
 """
+
 import sys
 from pathlib import Path
+
+from app import app
 
 # --- Добавляем корень проекта в sys.path ------------------------------------
 # Файл лежит в testCI/tests/test_app.py
@@ -22,9 +25,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 # -----------------------------------------------------------------------------
-
-from app import app
-
 
 def test_health_endpoint_returns_ok() -> None:
     """Проверяем, что /health возвращает статус 200 и правильный JSON."""

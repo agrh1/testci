@@ -8,7 +8,7 @@
   - GET /       — простая страница, по которой удобно проверять CD
 """
 
-from flask import Flask, jsonify, Response
+from flask import Flask, Response, jsonify
 
 # Создаём экземпляр приложения Flask.
 # Имя модуля (__name__) нужно Flask'у для поиска шаблонов, статики и т.п.
