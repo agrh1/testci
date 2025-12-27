@@ -35,7 +35,7 @@ HEALTH_INTERVAL_SEC = int(env("HEALTH_INTERVAL_SEC", "5"))
 
 
 async def healthcheck_loop(session: aiohttp.ClientSession) -> None:
-    """Фоновая проверка /health у web-сервиса. Не влияет на Telegram-бота."""
+    """Фоновая проверка /health у web-сервиса. Не влияет на Telegram-бот."""
     url = f"{WEB_BASE_URL.rstrip('/')}/health"
     logger.info("Starting healthcheck loop for %s, interval=%ss", url, HEALTH_INTERVAL_SEC)
 
