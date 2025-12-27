@@ -3,8 +3,9 @@ name: CI/CD — tests → build → push
 on:
   push:
     branches:
-      - main
-      - staging
+      - disable
+      # - main
+      # - staging
 
 jobs:
   test-build-push:
