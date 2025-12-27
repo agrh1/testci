@@ -16,7 +16,7 @@ services:
 
   web:
     # Образ из GHCR (собирается GitHub Actions)
-    image: ghcr.io/agrh1/testCI:web-prod
+    image: ghcr.io/agrh1/testci:web-prod
     container_name: cd-demo-web
 
     # Подгружаем переменные окружения из .env на сервере
@@ -48,7 +48,7 @@ services:
 
   bot:
     # Образ такой же, но команда другая
-    image: ghcr.io/agrh1/testCI:bot-prod
+    image: ghcr.io/agrh1/testci:bot-prod
     container_name: cd-demo-bot
 
     command: ["python", "bot.py"]

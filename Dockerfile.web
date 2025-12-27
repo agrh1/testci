@@ -1,23 +1,21 @@
 # Dockerfile.web
 # Образ для web-сервиса (Flask + gunicorn).
-# Собирается отдельно от бота, чтобы можно было развивать независимо.
+# Важно: ставим только зависимости web из requirements-web.txt.
 
 FROM python:3.12-slim
 
-# Чтобы логи сразу выводились в stdout/stderr без буферизации
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Сначала зависимости — это улучшает кеширование слоёв
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Сначала зависимости — для лучшего кеширования
+COPY requirements-web.txt /app/requirements-web.txt
+RUN pip install --no-cache-dir -r /app/requirements-web.txt
 
 # Затем исходники
 COPY . /app
 
-# Web слушает внутри контейнера 8000
 EXPOSE 8000
 
 # Запуск web
