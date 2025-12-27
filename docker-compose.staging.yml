@@ -25,7 +25,7 @@ services:
       - "${APP_ENV:-8001}:8000"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read(); print('ok')\""]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -55,3 +55,25 @@ services:
 
     labels:
       com.centurylinklabs.watchtower.enable: "true"
+
+  watchtower:
+    # Версия 1.7.1 совместима с Docker API 1.44+
+    image: containrrr/watchtower
+    container_name: watchtower-staging
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    environment:
+      # FIX для Docker 29+
+      DOCKER_API_VERSION: "1.44"
+
+      WATCHTOWER_POLL_INTERVAL: 300     # каждые 5 минут
+      WATCHTOWER_CLEANUP: "true"        # удалять старые образы
+      WATCHTOWER_ROLLBACK: "true"       # откат если контейнер не поднялся
+      WATCHTOWER_LABEL_ENABLE: "true"   # обновлять только помеченные контейнеры
+
+    restart: unless-stopped
+    labels:
+      # Сам watchtower обновлять НЕ нужно
+      com.centurylinklabs.watchtower.enable: "false"
