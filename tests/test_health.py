@@ -1,23 +1,41 @@
-# tests/test_health.py
-# Smoke-тест: web-сервис должен отвечать на /health
+from __future__ import annotations
 
 import json
 import os
 import time
 import urllib.request
 
+import pytest
 
-def test_health_endpoint_ok():
+from app import app
+
+
+def test_health_unit_ok() -> None:
     """
-    Проверяем, что /health отвечает HTTP 200
-    и возвращает JSON со status=ok.
+    Unit-тест: проверяем /health через Flask test client.
 
-    По умолчанию тест ходит на localhost:8000,
-    но можно переопределить переменной WEB_TEST_URL.
+    Это должно стабильно работать в CI, потому что не нужен поднятый сервер.
     """
-    url = os.getenv("WEB_TEST_URL", "http://localhost:8000/health")
+    client = app.test_client()
+    resp = client.get("/health")
+    assert resp.status_code == 200
 
-    # Небольшой retry, чтобы удобно было гонять тест сразу после поднятия контейнеров
+    data = resp.get_json()
+    assert data is not None
+    assert data.get("status") == "ok"
+
+
+@pytest.mark.skipif(not os.getenv("WEB_TEST_URL"), reason="WEB_TEST_URL не задан — integration-тест пропущен")
+def test_health_integration_ok() -> None:
+    """
+    Integration-тест: проверяем /health по реальному HTTP URL.
+
+    Запускается только если задан WEB_TEST_URL.
+    Пример:
+      WEB_TEST_URL=http://localhost:8000/health pytest -q
+    """
+    url = os.getenv("WEB_TEST_URL", "").strip()
+
     last_err = None
     for _ in range(10):
         try:
