@@ -73,8 +73,8 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: |
-            ghcr.io/${{ github.repository }}:web-staging
-            ghcr.io/${{ github.repository }}:web-sha-${{ github.sha }}
+            ghcr.io/testci:web-staging
+            ghcr.io/testci:web-sha-${{ github.sha }}
 
       # BOT: bot-staging + bot-sha-<sha>
       - name: Build & push bot (staging)
@@ -86,5 +86,5 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: |
-            ghcr.io/${{ github.repository }}:bot-staging
-            ghcr.io/${{ github.repository }}:bot-sha-${{ github.sha }}
+            ghcr.io/testci:bot-staging
+            ghcr.io/testci:bot-sha-${{ github.sha }}
