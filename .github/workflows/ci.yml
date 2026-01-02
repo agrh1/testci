@@ -10,9 +10,44 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      bot: ${{ steps.filter.outputs.bot }}
+      shared: ${{ steps.filter.outputs.shared }}
+      any_image: ${{ steps.filter.outputs.web == 'true' || steps.filter.outputs.bot == 'true' || steps.filter.outputs.shared == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Paths filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          # ВАЖНО: пути максимально консервативные, чтобы не пропустить нужную сборку.
+          filters: |
+            web:
+              - "app.py"
+              - "Dockerfile.web"
+              - "requirements-web.txt"
+              - "web/**"
+            bot:
+              - "bot.py"
+              - "Dockerfile.bot"
+              - "requirements-bot.txt"
+              - "bot/**"
+            shared:
+              - "requirements-dev.txt"
+              - "scripts/**"
+              - ".github/workflows/**"
+              - "**/*.py"  # если появятся общие модули в корне — безопаснее пересобрать оба
+
   ci:
     name: ruff + pytest
     runs-on: ubuntu-latest
+    needs: changes
 
     steps:
       - name: Checkout
@@ -47,7 +82,8 @@ jobs:
   docker-build:
     name: Docker build (no push)
     runs-on: ubuntu-latest
-    needs: ci
+    needs: [changes, ci]
+    if: ${{ needs.changes.outputs.any_image == 'true' }}
 
     steps:
       - name: Checkout
@@ -56,8 +92,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Собираем web
+      # WEB (если изменился web или shared)
       - name: Build web image (no push)
+        if: ${{ needs.changes.outputs.web == 'true' || needs.changes.outputs.shared == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -66,10 +103,13 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: |
-            ghcr.io/${{ github.repository }}/web:ci-${{ github.sha }}
+            web:ci-${{ github.sha }}
+          cache-from: type=gha,scope=web-ci
+          cache-to: type=gha,mode=max,scope=web-ci
 
-      # Собираем bot
+      # BOT (если изменился bot или shared)
       - name: Build bot image (no push)
+        if: ${{ needs.changes.outputs.bot == 'true' || needs.changes.outputs.shared == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -78,4 +118,6 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: |
-            ghcr.io/${{ github.repository }}/bot:ci-${{ github.sha }}
+            bot:ci-${{ github.sha }}
+          cache-from: type=gha,scope=bot-ci
+          cache-to: type=gha,mode=max,scope=bot-ci
