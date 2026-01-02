@@ -39,10 +39,14 @@ jobs:
               - "requirements-bot.txt"
               - "bot/**"
             shared:
-              - "requirements-dev.txt"
-              - "scripts/**"
               - ".github/workflows/**"
-              - "**/*.py"  # если появятся общие модули в корне — безопаснее пересобрать оба
+              - "scripts/**"
+              - "requirements-dev.txt"
+              - "common/**"
+              - "pyproject.toml"
+              - "ruff.toml"
+              - "pytest.ini"
+              - "setup.cfg"
 
   ci:
     name: ruff + pytest

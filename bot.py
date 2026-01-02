@@ -212,7 +212,6 @@ def _msg_ctx(message: Message) -> str:
     chat_id = getattr(getattr(message, "chat", None), "id", None)
     return f"user_id={user_id} chat_id={chat_id}"
 
-
 @dp.message(Command("start"))
 async def cmd_start(message: Message) -> None:
     log.info("command=/start %s", _msg_ctx(message))
