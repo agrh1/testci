@@ -205,9 +205,7 @@ def get_telegram_token() -> str:
         raise RuntimeError("Не задана переменная окружения TELEGRAM_BOT_TOKEN")
     return token
 
-
 dp = Dispatcher()
-
 
 def _msg_ctx(message: Message) -> str:
     user_id = getattr(getattr(message, "from_user", None), "id", None)
