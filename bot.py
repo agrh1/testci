@@ -13,6 +13,7 @@ from aiogram.types import ErrorEvent, Message
 
 from bot import ping_reply_text
 from bot.utils.polling import PollingState, polling_loop
+from bot.utils.sd_web_client import SdWebClient
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
 from bot.utils.web_guard import WebGuard
@@ -89,6 +90,25 @@ async def cmd_needs_web(message: Message) -> None:
     await message.answer("web готов ✅ (дальше будет реальная бизнес-логика)")
 
 
+
+OPEN_STATUS_ID = 31  # "Открыта" (как ты указал)
+async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
+    res = await sd_web_client.get_open(limit=20)
+    if res.error:
+        await message.answer(f"❌ ServiceDesk временно недоступен: {res.error}")
+        return
+
+    lines = [
+        f"📌 Открытые заявки (StatusIds={res.status_id})",
+        f"Показано: {res.count_returned}",
+        "",
+    ]
+    for t in res.items:
+        lines.append(f"- #{t.get('Id')}: {t.get('Name')}")
+    await message.answer("\n".join(lines))
+
+
+
 async def main() -> None:
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
@@ -125,7 +145,8 @@ async def main() -> None:
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["polling_state"] = polling_state
-
+    sd_web_client = SdWebClient(base_url=web_base_url, timeout_s=3.0)
+    dp.workflow_data["sd_web_client"] = sd_web_client
     # Глобальный error handler
     dp.errors.register(on_error)
 
@@ -134,6 +155,8 @@ async def main() -> None:
     dp.message.register(cmd_ping, Command("ping"))
     dp.message.register(cmd_status, Command("status"))
     dp.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
+    dp.message.register(cmd_sd_open, Command("sd_open"))
+
 
     # Запуск polling
     polling_task = asyncio.create_task(

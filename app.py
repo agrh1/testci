@@ -7,15 +7,27 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
+import requests
 from flask import Flask, g, jsonify, request
 
 app = Flask(__name__)
 
 ALLOWED_ENVIRONMENTS = {"staging", "prod", "local"}
 
+# Обязательные переменные для web-сервиса (readiness).
+# Раньше был только SERVICEDESK_API_TOKEN, но IntraService использует Basic Auth,
+# поэтому обязательными делаем логин/пароль.
 REQUIRED_ENV_VARS = [
     "SERVICEDESK_BASE_URL",
+    "SERVICEDESK_LOGIN",
+    "SERVICEDESK_PASSWORD",
+]
+
+# Оставляем токен как "опциональный legacy" (вдруг где-то уже используется),
+# но readiness больше не должен зависеть от него.
+OPTIONAL_ENV_VARS = [
     "SERVICEDESK_API_TOKEN",
+    "SERVICEDESK_TIMEOUT_S",
 ]
 
 
@@ -29,6 +41,15 @@ def get_environment() -> str:
 
 def is_strict_readiness() -> bool:
     return os.getenv("STRICT_READINESS", "0").strip() == "1"
+
+
+def get_servicedesk_timeout_s() -> float:
+    # Таймаут запросов к IntraService
+    raw = os.getenv("SERVICEDESK_TIMEOUT_S", "10").strip()
+    try:
+        return float(raw)
+    except Exception:
+        return 10.0
 
 
 # -----------------------------
@@ -191,6 +212,63 @@ def build_readiness_checks() -> list[ReadyCheck]:
 
 
 # -----------------------------
+# IntraService интеграция
+# -----------------------------
+
+def _sd_base_url() -> str:
+    return os.getenv("SERVICEDESK_BASE_URL", "").rstrip("/")
+
+
+def _sd_login() -> str:
+    return os.getenv("SERVICEDESK_LOGIN", "")
+
+
+def _sd_password() -> str:
+    return os.getenv("SERVICEDESK_PASSWORD", "")
+
+
+def _intraservice_list_tasks_by_status(*, status_id: int, page: int, pagesize: int, fields: str) -> dict[str, Any]:
+    """
+    Запрос списка заявок в IntraService по статусу.
+
+    ВАЖНО:
+    - IntraService использует Basic Auth (login/password).
+    - Ответ коллекции содержит Tasks + Paginator.
+    """
+    base_url = _sd_base_url()
+    url = f"{base_url}/api/task"
+
+    params = {
+        "StatusIds": str(status_id),
+        "page": str(page),
+        "pagesize": str(pagesize),
+        "fields": fields,
+    }
+
+    timeout_s = get_servicedesk_timeout_s()
+
+    # Прокидываем request_id для корреляции логов (если IntraService его сохранит — отлично).
+    headers = {
+        "Accept": "application/json",
+        "X-Request-ID": getattr(g, "request_id", uuid.uuid4().hex),
+    }
+
+    r = requests.get(
+        url,
+        params=params,
+        auth=(_sd_login(), _sd_password()),
+        timeout=timeout_s,
+        headers=headers,
+    )
+
+    if r.status_code >= 400:
+        # Возвращаем текст как есть, чтобы было диагностируемо.
+        raise RuntimeError(f"IntraService error {r.status_code}: {r.text}")
+
+    return r.json()
+
+
+# -----------------------------
 # Routes
 # -----------------------------
 
@@ -226,6 +304,81 @@ def status() -> tuple[Any, int]:
         "git_sha": get_git_sha(),
     }
     return jsonify(payload), 200
+
+
+@app.get("/sd/open")
+def sd_open() -> tuple[Any, int]:
+    """
+    Возвращает заявки IntraService в статусе "Открыта" (StatusId=31).
+
+    query params:
+    - limit: сколько заявок вернуть суммарно (1..500), по умолчанию 50
+    - pagesize: размер страницы IntraService (1..2000), по умолчанию 50
+    - fields: список полей IntraService через запятую (умолчание: Id,Name,Created,Creator,StatusId)
+    """
+    status_id = 31
+
+    # Защита от "случайно вернуть слишком много"
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 500))
+
+    try:
+        pagesize = int(request.args.get("pagesize", "50"))
+    except Exception:
+        pagesize = 50
+    pagesize = max(1, min(pagesize, 2000))
+
+    fields = (request.args.get("fields") or "Id,Name,Created,Creator,StatusId").strip()
+
+    items: list[dict[str, Any]] = []
+    page = 1
+    paginator: dict[str, Any] | None = None
+
+    try:
+        while len(items) < limit:
+            data = _intraservice_list_tasks_by_status(
+                status_id=status_id,
+                page=page,
+                pagesize=pagesize,
+                fields=fields,
+            )
+
+            tasks = data.get("Tasks") or []
+            paginator = data.get("Paginator") or {}
+
+            items.extend(tasks)
+
+            # Если страницы кончились — выходим
+            page_count = int(paginator.get("PageCount", page))
+            if page >= page_count:
+                break
+            page += 1
+
+        items = items[:limit]
+
+        return jsonify(
+            {
+                "status_id": status_id,
+                "count_returned": len(items),
+                "items": items,
+                "paginator": paginator,
+            }
+        ), 200
+
+    except Exception as e:
+        # Важно: не 500 без деталей. Это endpoint для интеграции, диагностика важна.
+        log.exception("sd_open failed request_id=%s err=%s", getattr(g, "request_id", "unknown"), str(e))
+        return jsonify(
+            {
+                "status": "error",
+                "error": str(e),
+                "request_id": getattr(g, "request_id", "unknown"),
+            }
+        ), 502
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
