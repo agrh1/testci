@@ -2,9 +2,12 @@
 Telegram bot (aiogram v3).
 
 Шаг 17: управляемая деградация web-зависимых команд.
-- /status всегда работает и показывает состояние web (health/ready)
-- /needs_web — пример web-зависимой команды (guard применяется фильтром)
-- /ping — локальная команда, всегда работает
+Шаг 18: фоновая задача (polling) + статус + глобальный error handler.
+
+- /status — локальная, всегда работает, показывает web checks
+- /needs_web — web-зависимая, guard через фильтр
+- /ping — локальная
+- /poll_status — локальная, показывает состояние polling
 """
 
 from __future__ import annotations
@@ -12,13 +15,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Optional
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import ErrorEvent, Message
 
 from bot import ping_reply_text  # legacy для тестов
+from bot.utils.polling import PollingState, polling_loop
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
 from bot.utils.web_guard import WebGuard
@@ -38,20 +43,31 @@ def _format_check_line(title: str, ok: bool, status: Optional[int], duration_ms:
     return f"{icon} {title}: status={status_s}, {duration_ms}ms, request_id={request_id}{err}"
 
 
+def _fmt_ts(ts: Optional[float]) -> str:
+    if ts is None:
+        return "—"
+    # простой человекочитаемый формат без tz-сложностей
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+async def on_error(event: ErrorEvent) -> None:
+    """
+    Глобальный обработчик ошибок aiogram.
+    Не даёт "тихо умирать" исключениям в хендлерах — всегда логируем.
+    """
+    logger = logging.getLogger("bot.errors")
+    logger.exception("Unhandled exception in update handling: %s", event.exception)
+
+
 async def cmd_start(message: Message) -> None:
-    await message.answer("Привет! Команды: /ping /status /needs_web")
+    await message.answer("Привет! Команды: /ping /status /needs_web /poll_status")
 
 
 async def cmd_ping(message: Message) -> None:
-    # Локальная команда: всегда работает, не зависит от web
     await message.answer(ping_reply_text())
 
 
 async def cmd_status(message: Message, web_client: WebClient) -> None:
-    """
-    Локальная команда: не должна блокироваться guard'ом.
-    Показывает health/ready web-сервиса.
-    """
     env = _get_env("ENVIRONMENT", "unknown")
     git_sha = _get_env("GIT_SHA", "unknown")
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
@@ -69,13 +85,20 @@ async def cmd_status(message: Message, web_client: WebClient) -> None:
     await message.answer("\n".join(lines))
 
 
-async def cmd_needs_web(message: Message) -> None:
-    """
-    Пример web-зависимой команды.
+async def cmd_poll_status(message: Message, polling_state: PollingState) -> None:
+    lines = [
+        "POLLING:",
+        f"- runs: {polling_state.runs}",
+        f"- failures: {polling_state.failures}",
+        f"- last_success: {_fmt_ts(polling_state.last_success_ts)}",
+        f"- last_error: {polling_state.last_error or '—'}",
+        f"- last_duration_ms: {polling_state.last_duration_ms if polling_state.last_duration_ms is not None else '—'}",
+    ]
+    await message.answer("\n".join(lines))
 
-    ВАЖНО: здесь НЕТ ручной проверки web.
-    Guard выполняется фильтром WebReadyFilter при регистрации команды.
-    """
+
+async def cmd_needs_web(message: Message) -> None:
+    # guard выполняется фильтром
     await message.answer("web готов ✅ (дальше будет реальная бизнес-логика)")
 
 
@@ -89,7 +112,7 @@ async def main() -> None:
     token = _get_env("TELEGRAM_BOT_TOKEN", required=True)
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
 
-    # WebClient/WebGuard (шаг 17)
+    # WebClient/WebGuard
     web_client = WebClient(
         base_url=web_base_url,
         timeout_s=float(os.getenv("WEB_TIMEOUT_S", "1.5")),
@@ -97,29 +120,47 @@ async def main() -> None:
     )
     web_guard = WebGuard(web_client)
 
+    # Polling state + task control
+    polling_state = PollingState()
+    stop_event = asyncio.Event()
+    polling_interval_s = float(os.getenv("POLL_INTERVAL_S", "30"))
+
     bot = Bot(token=token)
     dp = Dispatcher()
 
-    # ✅ DI: зависимости для фильтров/хендлеров
+    # DI
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
+    dp.workflow_data["polling_state"] = polling_state
 
-    # Роутинг команд
+    # Глобальный error handler
+    dp.errors.register(on_error)
+
+    # Команды
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_ping, Command("ping"))
     dp.message.register(cmd_status, Command("status"))
+    dp.message.register(cmd_poll_status, Command("poll_status"))
+    dp.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
 
-    # ✅ web-зависимая команда: guard включён фильтром
-    dp.message.register(
-        cmd_needs_web,
-        Command("needs_web"),
-        WebReadyFilter("/needs_web"),
+    # Запускаем polling
+    polling_task = asyncio.create_task(
+        polling_loop(state=polling_state, stop_event=stop_event, interval_s=polling_interval_s),
+        name="polling_loop",
     )
 
-    logger.info("Bot started. WEB_BASE_URL=%s", web_base_url)
+    logger.info("Bot started. WEB_BASE_URL=%s POLL_INTERVAL_S=%s", web_base_url, polling_interval_s)
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Корректная остановка фона
+        stop_event.set()
+        polling_task.cancel()
+        with contextlib.suppress(Exception):
+            await polling_task
 
 
 if __name__ == "__main__":
+    import contextlib
     asyncio.run(main())
