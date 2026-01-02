@@ -233,10 +233,10 @@ async def cmd_status(message: Message) -> None:
     log.info("command=/status request_id=%s %s", request_id, _msg_ctx(message))
 
     info = get_app_info()
-    checks = [
-        await _check_endpoint("web.health", HEALTH_URL, request_id=request_id),
-        await _check_endpoint("web.ready", READY_URL, request_id=request_id),
-    ]
+    
+    health_task = _check_endpoint("web.health", HEALTH_URL, request_id=request_id)
+    ready_task = _check_endpoint("web.ready", READY_URL, request_id=request_id)
+    checks = await asyncio.gather(health_task, ready_task)
 
     log.info(
         "web_checks request_id=%s health_ok=%s ready_ok=%s health_ms=%s ready_ms=%s",
