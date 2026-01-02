@@ -221,7 +221,6 @@ async def cmd_ping(message: Message) -> None:
     log.info("command=/ping %s", _msg_ctx(message))
     await message.answer(ping_reply_text())
 
-
 @dp.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     request_id = uuid.uuid4().hex  # <-- единый id на команду
