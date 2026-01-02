@@ -1,18 +1,7 @@
-"""
-Telegram bot (aiogram v3).
-
-Шаг 17: управляемая деградация web-зависимых команд.
-Шаг 18: фоновая задача (polling) + статус + глобальный error handler.
-
-- /status — локальная, всегда работает, показывает web checks
-- /needs_web — web-зависимая, guard через фильтр
-- /ping — локальная
-- /poll_status — локальная, показывает состояние polling
-"""
-
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -22,7 +11,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import ErrorEvent, Message
 
-from bot import ping_reply_text  # legacy для тестов
+from bot import ping_reply_text
 from bot.utils.polling import PollingState, polling_loop
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
@@ -46,15 +35,10 @@ def _format_check_line(title: str, ok: bool, status: Optional[int], duration_ms:
 def _fmt_ts(ts: Optional[float]) -> str:
     if ts is None:
         return "—"
-    # простой человекочитаемый формат без tz-сложностей
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
 
 
 async def on_error(event: ErrorEvent) -> None:
-    """
-    Глобальный обработчик ошибок aiogram.
-    Не даёт "тихо умирать" исключениям в хендлерах — всегда логируем.
-    """
     logger = logging.getLogger("bot.errors")
     logger.exception("Unhandled exception in update handling: %s", event.exception)
 
@@ -91,6 +75,7 @@ async def cmd_poll_status(message: Message, polling_state: PollingState) -> None
         f"- runs: {polling_state.runs}",
         f"- failures: {polling_state.failures}",
         f"- last_success: {_fmt_ts(polling_state.last_success_ts)}",
+        f"- last_http_status: {polling_state.last_http_status if polling_state.last_http_status is not None else '—'}",
         f"- last_error: {polling_state.last_error or '—'}",
         f"- last_duration_ms: {polling_state.last_duration_ms if polling_state.last_duration_ms is not None else '—'}",
     ]
@@ -98,7 +83,6 @@ async def cmd_poll_status(message: Message, polling_state: PollingState) -> None
 
 
 async def cmd_needs_web(message: Message) -> None:
-    # guard выполняется фильтром
     await message.answer("web готов ✅ (дальше будет реальная бизнес-логика)")
 
 
@@ -110,7 +94,7 @@ async def main() -> None:
     logger = logging.getLogger("bot")
 
     token = _get_env("TELEGRAM_BOT_TOKEN", required=True)
-    web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
+    web_base_url = _get_env("WEB_BASE_URL", "http://web:8000").rstrip("/")
 
     # WebClient/WebGuard
     web_client = WebClient(
@@ -120,41 +104,47 @@ async def main() -> None:
     )
     web_guard = WebGuard(web_client)
 
-    # Polling state + task control
+    # Polling
     polling_state = PollingState()
     stop_event = asyncio.Event()
-    polling_interval_s = float(os.getenv("POLL_INTERVAL_S", "30"))
+
+    poll_url = _get_env("POLL_URL", f"{web_base_url}/ready")
+    poll_interval_s = float(os.getenv("POLL_INTERVAL_S", "30"))
+    poll_timeout_s = float(os.getenv("POLL_TIMEOUT_S", "2"))
+    poll_max_backoff_s = float(os.getenv("POLL_MAX_BACKOFF_S", "300"))
 
     bot = Bot(token=token)
     dp = Dispatcher()
 
-    # DI
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["polling_state"] = polling_state
 
-    # Глобальный error handler
     dp.errors.register(on_error)
 
-    # Команды
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_ping, Command("ping"))
     dp.message.register(cmd_status, Command("status"))
     dp.message.register(cmd_poll_status, Command("poll_status"))
     dp.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
 
-    # Запускаем polling
     polling_task = asyncio.create_task(
-        polling_loop(state=polling_state, stop_event=stop_event, interval_s=polling_interval_s),
+        polling_loop(
+            state=polling_state,
+            stop_event=stop_event,
+            url=poll_url,
+            base_interval_s=poll_interval_s,
+            timeout_s=poll_timeout_s,
+            max_backoff_s=poll_max_backoff_s,
+        ),
         name="polling_loop",
     )
 
-    logger.info("Bot started. WEB_BASE_URL=%s POLL_INTERVAL_S=%s", web_base_url, polling_interval_s)
+    logger.info("Bot started. WEB_BASE_URL=%s POLL_URL=%s", web_base_url, poll_url)
 
     try:
         await dp.start_polling(bot)
     finally:
-        # Корректная остановка фона
         stop_event.set()
         polling_task.cancel()
         with contextlib.suppress(Exception):
@@ -162,5 +152,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    import contextlib
     asyncio.run(main())
