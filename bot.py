@@ -39,22 +39,24 @@ def _fmt_ts(ts: Optional[float]) -> str:
 
 
 async def on_error(event: ErrorEvent) -> None:
+    # Глобальный обработчик ошибок апдейтов: логируем всё, чтобы не было "тихих" падений.
     logger = logging.getLogger("bot.errors")
     logger.exception("Unhandled exception in update handling: %s", event.exception)
 
 
 async def cmd_start(message: Message) -> None:
-    await message.answer("Привет! Команды: /ping /status /needs_web /poll_status")
+    await message.answer("Привет! Команды: /ping /status /needs_web")
 
 
 async def cmd_ping(message: Message) -> None:
     await message.answer(ping_reply_text())
 
 
-async def cmd_status(message: Message, web_client: WebClient) -> None:
+async def cmd_status(message: Message, web_client: WebClient, polling_state: PollingState) -> None:
     env = _get_env("ENVIRONMENT", "unknown")
     git_sha = _get_env("GIT_SHA", "unknown")
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
+    poll_url = _get_env("POLL_URL", f"{web_base_url.rstrip('/')}/ready")
 
     health, ready = await web_client.check_health_ready(force=True)
 
@@ -62,27 +64,28 @@ async def cmd_status(message: Message, web_client: WebClient) -> None:
         f"ENVIRONMENT: {env}",
         f"GIT_SHA: {git_sha}",
         f"WEB_BASE_URL: {web_base_url}",
+        f"POLL_URL: {poll_url}",
         "",
         _format_check_line("web.health", health.ok, health.status, health.duration_ms, health.request_id, health.error),
         _format_check_line("web.ready", ready.ok, ready.status, ready.duration_ms, ready.request_id, ready.error),
-    ]
-    await message.answer("\n".join(lines))
-
-
-async def cmd_poll_status(message: Message, polling_state: PollingState) -> None:
-    lines = [
+        "",
         "POLLING:",
         f"- runs: {polling_state.runs}",
-        f"- failures: {polling_state.failures}",
+        f"- failures: {polling_state.failures} (consecutive={polling_state.consecutive_failures})",
+        f"- last_run: {_fmt_ts(polling_state.last_run_ts)}",
         f"- last_success: {_fmt_ts(polling_state.last_success_ts)}",
         f"- last_http_status: {polling_state.last_http_status if polling_state.last_http_status is not None else '—'}",
+        f"- last_request_id: {polling_state.last_request_id or '—'}",
         f"- last_error: {polling_state.last_error or '—'}",
         f"- last_duration_ms: {polling_state.last_duration_ms if polling_state.last_duration_ms is not None else '—'}",
+        f"- current_interval_s: {polling_state.current_interval_s if polling_state.current_interval_s is not None else '—'}",
+        f"- last_cursor: {polling_state.last_cursor or '—'}",
     ]
     await message.answer("\n".join(lines))
 
 
 async def cmd_needs_web(message: Message) -> None:
+    # guard выполняется фильтром WebReadyFilter
     await message.answer("web готов ✅ (дальше будет реальная бизнес-логика)")
 
 
@@ -104,7 +107,7 @@ async def main() -> None:
     )
     web_guard = WebGuard(web_client)
 
-    # Polling
+    # Polling settings
     polling_state = PollingState()
     stop_event = asyncio.Event()
 
@@ -112,22 +115,27 @@ async def main() -> None:
     poll_interval_s = float(os.getenv("POLL_INTERVAL_S", "30"))
     poll_timeout_s = float(os.getenv("POLL_TIMEOUT_S", "2"))
     poll_max_backoff_s = float(os.getenv("POLL_MAX_BACKOFF_S", "300"))
+    poll_max_retries = int(os.getenv("POLL_MAX_RETRIES", "2"))
+    poll_retry_base_delay_s = float(os.getenv("POLL_RETRY_BASE_DELAY_S", "0.5"))
 
     bot = Bot(token=token)
     dp = Dispatcher()
 
+    # DI
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["polling_state"] = polling_state
 
+    # Глобальный error handler
     dp.errors.register(on_error)
 
+    # Команды
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_ping, Command("ping"))
     dp.message.register(cmd_status, Command("status"))
-    dp.message.register(cmd_poll_status, Command("poll_status"))
     dp.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
 
+    # Запуск polling
     polling_task = asyncio.create_task(
         polling_loop(
             state=polling_state,
@@ -136,11 +144,19 @@ async def main() -> None:
             base_interval_s=poll_interval_s,
             timeout_s=poll_timeout_s,
             max_backoff_s=poll_max_backoff_s,
+            max_retries=poll_max_retries,
+            retry_base_delay_s=poll_retry_base_delay_s,
         ),
         name="polling_loop",
     )
 
-    logger.info("Bot started. WEB_BASE_URL=%s POLL_URL=%s", web_base_url, poll_url)
+    logger.info(
+        "Bot started. WEB_BASE_URL=%s POLL_URL=%s POLL_INTERVAL_S=%s POLL_MAX_RETRIES=%s",
+        web_base_url,
+        poll_url,
+        poll_interval_s,
+        poll_max_retries,
+    )
 
     try:
         await dp.start_polling(bot)
