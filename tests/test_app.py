@@ -40,4 +40,4 @@ def test_index_endpoint_returns_text() -> None:
     assert response.status_code == 200
     # content-type может быть text/html; charset=utf-8 — нам важнее содержимое
     text = response.get_data(as_text=True)
-    assert "Hello from CD v5 (PROD CHECK)" in text
+    assert "testCI service is running" in text
