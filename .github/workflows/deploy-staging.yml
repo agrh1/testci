@@ -13,7 +13,6 @@ permissions:
   packages: write
 
 env:
-  # Контракт: образ один (ghcr.io/agrh1/testci), различаем web/bot через теги
   GHCR_IMAGE: ghcr.io/agrh1/testci
 
 jobs:
@@ -26,13 +25,20 @@ jobs:
       shared: ${{ steps.filter.outputs.shared }}
       any_image: ${{ steps.filter.outputs.web == 'true' || steps.filter.outputs.bot == 'true' || steps.filter.outputs.shared == 'true' }}
     steps:
-      - name: Checkout
+      - name: Checkout (full history for diff)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Paths filter
         id: filter
         uses: dorny/paths-filter@v3
         with:
+          # ЯВНО задаём диапазон diff именно для push:
+          # from = github.event.before, to = github.sha
+          base: ${{ github.event.before }}
+          ref: ${{ github.sha }}
+          list-files: shell
           filters: |
             web:
               - "app.py"
@@ -53,6 +59,26 @@ jobs:
               - "ruff.toml"
               - "pytest.ini"
               - "setup.cfg"
+
+      - name: Debug filter outputs
+        run: |
+          echo "before: ${{ github.event.before }}"
+          echo "sha:    ${{ github.sha }}"
+          echo "web:    ${{ steps.filter.outputs.web }}"
+          echo "bot:    ${{ steps.filter.outputs.bot }}"
+          echo "shared: ${{ steps.filter.outputs.shared }}"
+          echo "any_image: ${{ steps.filter.outputs.web == 'true' || steps.filter.outputs.bot == 'true' || steps.filter.outputs.shared == 'true' }}"
+          echo ""
+          echo "Changed files (git diff --name-only):"
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} || true
+          echo ""
+          echo "Matched files by filter:"
+          echo "web files:"
+          echo "${{ steps.filter.outputs.web_files }}"
+          echo "bot files:"
+          echo "${{ steps.filter.outputs.bot_files }}"
+          echo "shared files:"
+          echo "${{ steps.filter.outputs.shared_files }}"
 
   ci:
     name: ruff + pytest
@@ -109,7 +135,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # WEB
       - name: Build & push web (staging)
         if: ${{ needs.changes.outputs.web == 'true' || needs.changes.outputs.shared == 'true' }}
         uses: docker/build-push-action@v6
@@ -125,7 +150,6 @@ jobs:
           cache-from: type=gha,scope=web-staging
           cache-to: type=gha,mode=max,scope=web-staging
 
-      # BOT
       - name: Build & push bot (staging)
         if: ${{ needs.changes.outputs.bot == 'true' || needs.changes.outputs.shared == 'true' }}
         uses: docker/build-push-action@v6
