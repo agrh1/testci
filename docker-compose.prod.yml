@@ -9,7 +9,7 @@
 # Особенности:
 #   - Образы приходят из GHCR (CI их туда пушит).
 #   - web и bot помечены label → watchtower обновляет только их.
-#   - watchtower работает в режиме pull-based CD.
+#   - watchtower нет своего.
 # ============================================================================
 
 services:
@@ -71,8 +71,3 @@ services:
 
     labels:
       com.centurylinklabs.watchtower.enable: "false"
-
-
-  
-
-
