@@ -1,7 +1,8 @@
 # bot/utils/sd_web_client.py
 """
-Клиент к нашему web-сервису для ServiceDesk-функций.
-На первом шаге: получить открытые заявки через /sd/open.
+Клиент для вызова ServiceDesk-функций через наш web-сервис.
+
+Сейчас: /sd/open (открытые заявки StatusIds=31 на стороне web).
 """
 
 from __future__ import annotations
@@ -14,10 +15,12 @@ import aiohttp
 
 @dataclass(frozen=True)
 class SdOpenResult:
+    ok: bool
     status_id: int
     count_returned: int
     items: list[dict[str, Any]]
     error: Optional[str] = None
+    request_id: Optional[str] = None
 
 
 class SdWebClient:
@@ -30,13 +33,41 @@ class SdWebClient:
         try:
             async with aiohttp.ClientSession(timeout=self._timeout) as session:
                 async with session.get(url, params={"limit": str(limit)}) as r:
-                    data = await r.json()
-                    if r.status >= 400:
-                        return SdOpenResult(status_id=31, count_returned=0, items=[], error=str(data))
+                    req_id = r.headers.get("X-Request-ID")
+                    # web у тебя возвращает json даже на ошибках (502) — но на всякий случай страхуемся
+                    try:
+                        data = await r.json()
+                    except Exception:
+                        txt = await r.text()
+                        return SdOpenResult(
+                            ok=False, status_id=31, count_returned=0, items=[],
+                            error=f"Bad response (status={r.status}): {txt}",
+                            request_id=req_id,
+                        )
+
+                    if r.status >= 400 or data.get("status") == "error":
+                        return SdOpenResult(
+                            ok=False,
+                            status_id=int(data.get("status_id", 31)),
+                            count_returned=0,
+                            items=[],
+                            error=data.get("error") or str(data),
+                            request_id=req_id,
+                        )
+
                     return SdOpenResult(
+                        ok=True,
                         status_id=int(data.get("status_id", 31)),
                         count_returned=int(data.get("count_returned", 0)),
                         items=data.get("items") or [],
+                        request_id=req_id,
                     )
         except Exception as e:
-            return SdOpenResult(status_id=31, count_returned=0, items=[], error=str(e))
+            return SdOpenResult(
+                ok=False,
+                status_id=31,
+                count_returned=0,
+                items=[],
+                error=str(e),
+                request_id=None,
+            )

@@ -91,21 +91,32 @@ async def cmd_needs_web(message: Message) -> None:
 
 
 
-OPEN_STATUS_ID = 31  # "Открыта" (как ты указал)
 async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
     res = await sd_web_client.get_open(limit=20)
-    if res.error:
-        await message.answer(f"❌ ServiceDesk временно недоступен: {res.error}")
+
+    if not res.ok:
+        # request_id полезен для поиска в логах web
+        rid = f"\nrequest_id={res.request_id}" if res.request_id else ""
+        await message.answer(f"❌ Не удалось получить заявки из ServiceDesk.{rid}\nПричина: {res.error}")
+        return
+
+    if not res.items:
+        await message.answer(f"📌 Открытые заявки (StatusId={res.status_id}): пусто ✅")
         return
 
     lines = [
-        f"📌 Открытые заявки (StatusIds={res.status_id})",
+        f"📌 Открытые заявки (StatusId={res.status_id})",
         f"Показано: {res.count_returned}",
         "",
     ]
-    for t in res.items:
+
+    # Показываем первые 20 (web и так ограничивает limit, но страхуемся)
+    for t in res.items[:20]:
+        # IntraService поля приходят как Id/Name (ровно как просили fields)
         lines.append(f"- #{t.get('Id')}: {t.get('Name')}")
+
     await message.answer("\n".join(lines))
+
 
 
 
@@ -145,7 +156,7 @@ async def main() -> None:
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["polling_state"] = polling_state
-    sd_web_client = SdWebClient(base_url=web_base_url, timeout_s=3.0)
+    sd_web_client = SdWebClient(base_url=web_base_url, timeout_s=float(os.getenv("SD_WEB_TIMEOUT_S", "3")))
     dp.workflow_data["sd_web_client"] = sd_web_client
     # Глобальный error handler
     dp.errors.register(on_error)
