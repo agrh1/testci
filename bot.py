@@ -5,6 +5,11 @@ Telegram bot (aiogram v3).
 - /status всегда работает и показывает состояние web (health/ready)
 - /needs_web — пример web-зависимой команды (блокируется guard'ом)
 - /ping — локальная команда, всегда работает
+
+ВАЖНО:
+aiogram v3 умеет DI: если в dp.workflow_data положить объекты,
+то их можно принимать как параметры хендлера.
+Это надёжнее, чем пытаться доставать dispatcher из Message.
 """
 
 from __future__ import annotations
@@ -37,17 +42,6 @@ def _format_check_line(title: str, ok: bool, status: Optional[int], duration_ms:
     return f"{icon} {title}: status={status_s}, {duration_ms}ms, request_id={request_id}{err}"
 
 
-def _deps(message: Message) -> tuple[WebClient, WebGuard]:
-    """
-    Достаём зависимости из workflow_data диспетчера.
-    Это штатный способ DI в aiogram v3.
-    """
-    dp = message.dispatcher
-    web_client: WebClient = dp.workflow_data["web_client"]
-    web_guard: WebGuard = dp.workflow_data["web_guard"]
-    return web_client, web_guard
-
-
 async def cmd_start(message: Message) -> None:
     await message.answer("Привет! Команды: /ping /status /needs_web")
 
@@ -57,7 +51,7 @@ async def cmd_ping(message: Message) -> None:
     await message.answer(ping_reply_text())
 
 
-async def cmd_status(message: Message) -> None:
+async def cmd_status(message: Message, web_client: WebClient) -> None:
     """
     Локальная команда: не должна блокироваться guard'ом.
     Показывает health/ready web-сервиса.
@@ -66,7 +60,6 @@ async def cmd_status(message: Message) -> None:
     git_sha = _get_env("GIT_SHA", "unknown")
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
 
-    web_client, _ = _deps(message)
     health, ready = await web_client.check_health_ready(force=True)
 
     lines = [
@@ -80,12 +73,11 @@ async def cmd_status(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-async def cmd_needs_web(message: Message) -> None:
+async def cmd_needs_web(message: Message, web_guard: WebGuard) -> None:
     """
     Пример web-зависимой команды. На шаге 17 она ничего не делает, кроме демонстрации guard.
     """
-    _, guard = _deps(message)
-    if not await guard.require_web(message, friendly_name="/needs_web"):
+    if not await web_guard.require_web(message, friendly_name="/needs_web"):
         return
 
     await message.answer("web готов ✅ (здесь дальше будет реальная бизнес-логика)")
@@ -112,7 +104,7 @@ async def main() -> None:
     bot = Bot(token=token)
     dp = Dispatcher()
 
-    # ✅ DI-хранилище: workflow_data
+    # ✅ DI: складываем зависимости сюда
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
 
