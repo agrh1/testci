@@ -100,12 +100,18 @@ async def polling_open_queue_loop(
     max_backoff_s: float = 300.0,
     min_notify_interval_s: float = 60.0,
     max_items_in_message: int = 10,
-    # Шаг 23/24: store может быть Redis или Memory (через ResilientStateStore)
     store: Optional[StateStore] = None,
     store_key: str = "bot:polling_state",
 ) -> None:
     """
     Polling очереди открытых заявок с персистентным состоянием.
+
+    ВАЖНО (шаг 24):
+    Даже если очередь не меняется и мы не пишем состояние, нам всё равно нужно
+    "трогать" Redis, чтобы:
+      1) обнаруживать падение Redis и включать fallback (memory),
+      2) фиксировать восстановление Redis.
+    Поэтому в начале каждого цикла делаем store.ping() (если метод есть).
     """
     interval_s = base_interval_s
 
@@ -117,6 +123,16 @@ async def polling_open_queue_loop(
         state.last_run_ts = time.time()
         state.runs += 1
         t0 = time.perf_counter()
+
+        # Шаг 24: активная проверка Redis (если store умеет ping)
+        if store is not None:
+            ping_fn = getattr(store, "ping", None)
+            if callable(ping_fn):
+                try:
+                    ping_fn()
+                except Exception:
+                    # ping сам по себе не должен валить polling
+                    pass
 
         try:
             res: SdOpenResult = await sd_web_client.get_open(limit=200)

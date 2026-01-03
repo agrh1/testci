@@ -71,7 +71,14 @@ async def cmd_status(
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
     alert_chat_id = _get_env("ALERT_CHAT_ID", "")
 
-    # Диагностика state store (шаг 24): показываем, чем реально пользуемся сейчас
+    # Шаг 24: перед выводом статуса активно проверяем Redis (если store умеет ping),
+    # чтобы backend отображал реальность "прямо сейчас", а не последнее состояние.
+    if state_store is not None:
+        ping_fn = getattr(state_store, "ping", None)
+        if callable(ping_fn):
+            with contextlib.suppress(Exception):
+                ping_fn()
+
     store_backend = state_store.backend() if state_store is not None else "disabled"
     store_last_error = getattr(state_store, "last_error", None) if state_store is not None else None
     store_last_ok_ts = getattr(state_store, "last_ok_ts", None) if state_store is not None else None
@@ -160,9 +167,6 @@ async def main() -> None:
     )
 
     # state store (шаг 24)
-    #
-    # Если REDIS_URL задан — используем Redis, но НЕ доверяем ему на 100%.
-    # При любой ошибке Redis переключаемся на in-memory store, чтобы бот не падал.
     redis_url = os.getenv("REDIS_URL", "").strip()
     state_store: Optional[StateStore] = None
     if redis_url:
@@ -177,8 +181,7 @@ async def main() -> None:
         fallback = MemoryStateStore(prefix="testci")
         state_store = ResilientStateStore(primary, fallback)
 
-        # Пытаемся ping'нуть Redis на старте, чтобы /status сразу показывал реальный backend.
-        # Если Redis недоступен — ничего страшного, уйдём в memory.
+        # Пинг на старте, чтобы backend был корректный сразу
         with contextlib.suppress(Exception):
             getattr(state_store, "ping", lambda: None)()
 
@@ -188,7 +191,6 @@ async def main() -> None:
     poll_interval_s = float(os.getenv("POLL_INTERVAL_S", "30"))
     poll_max_backoff_s = float(os.getenv("POLL_MAX_BACKOFF_S", "300"))
 
-    # Шаг 22
     min_notify_interval_s = float(os.getenv("MIN_NOTIFY_INTERVAL_S", "60"))
     max_items_in_message = int(os.getenv("MAX_ITEMS_IN_MESSAGE", "10"))
 
