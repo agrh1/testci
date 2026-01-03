@@ -8,7 +8,7 @@ from typing import Awaitable, Callable, Optional
 
 from bot.utils.sd_state import make_ids_snapshot_hash, normalize_tasks_for_message
 from bot.utils.sd_web_client import SdOpenResult, SdWebClient
-from bot.utils.state_store import RedisStateStore
+from bot.utils.state_store import StateStore
 
 
 @dataclass
@@ -23,18 +23,15 @@ class PollingState:
     last_error: Optional[str] = None
     last_duration_ms: Optional[int] = None
 
-    # Снэпшот очереди (ТОЛЬКО по ID)
     last_sent_snapshot: Optional[str] = None
     last_sent_ids: Optional[list[int]] = None
 
     last_sent_count: Optional[int] = None
     last_sent_at: Optional[float] = None
 
-    # Rate-limit уведомлений
     last_notify_attempt_at: Optional[float] = None
     notify_skipped_rate_limit: int = 0
 
-    # Диагностика последнего рассчитанного состояния
     last_calculated_count: Optional[int] = None
     last_calculated_at: Optional[float] = None
 
@@ -57,11 +54,7 @@ def _fmt_state_message(*, normalized_items: list[dict[str, object]], max_items_i
     return "\n".join(lines)
 
 
-def load_polling_state_from_store(state: PollingState, store: RedisStateStore, key: str) -> None:
-    """
-    Восстанавливаем важные поля после рестарта.
-    Счётчики runs/failures не трогаем — это runtime метрики.
-    """
+def load_polling_state_from_store(state: PollingState, store: StateStore, key: str) -> None:
     data = store.get_json(key)
     if not data:
         return
@@ -75,10 +68,7 @@ def load_polling_state_from_store(state: PollingState, store: RedisStateStore, k
     state.notify_skipped_rate_limit = int(data.get("notify_skipped_rate_limit", 0))
 
 
-def save_polling_state_to_store(state: PollingState, store: RedisStateStore, key: str) -> None:
-    """
-    Сохраняем только то, что нужно для продолжения после рестарта.
-    """
+def save_polling_state_to_store(state: PollingState, store: StateStore, key: str) -> None:
     payload = {
         "last_sent_snapshot": state.last_sent_snapshot,
         "last_sent_ids": state.last_sent_ids,
@@ -95,21 +85,21 @@ async def polling_open_queue_loop(
     state: PollingState,
     stop_event: asyncio.Event,
     sd_web_client: SdWebClient,
-    notify: Callable[[str], Awaitable[None]],
+    # Основное уведомление (список) — только при изменении состава очереди
+    notify_main: Callable[[list[dict], str], Awaitable[None]],
+    # Эскалация — дополнительно, может сработать без изменения очереди
+    notify_escalation: Optional[Callable[[list[dict], str], Awaitable[None]]] = None,
+    # Функция, которая возвращает "тикеты для эскалации" на текущем цикле
+    get_escalations: Optional[Callable[[list[dict]], list[dict]]] = None,
     base_interval_s: float = 30.0,
     max_backoff_s: float = 300.0,
     min_notify_interval_s: float = 60.0,
     max_items_in_message: int = 10,
-    # Шаг 23:
-    store: Optional[RedisStateStore] = None,
+    store: Optional[StateStore] = None,
     store_key: str = "bot:polling_state",
 ) -> None:
-    """
-    Polling очереди открытых заявок с персистентным состоянием.
-    """
     interval_s = base_interval_s
 
-    # Восстановление состояния (если есть store)
     if store is not None:
         load_polling_state_from_store(state, store, store_key)
 
@@ -117,6 +107,15 @@ async def polling_open_queue_loop(
         state.last_run_ts = time.time()
         state.runs += 1
         t0 = time.perf_counter()
+
+        # шаг 24: ping чтобы видеть падение/восстановление Redis
+        if store is not None:
+            ping_fn = getattr(store, "ping", None)
+            if callable(ping_fn):
+                try:
+                    ping_fn()
+                except Exception:
+                    pass
 
         try:
             res: SdOpenResult = await sd_web_client.get_open(limit=200)
@@ -133,6 +132,14 @@ async def polling_open_queue_loop(
                 state.consecutive_failures = 0
                 interval_s = base_interval_s
 
+                # --- 1) Эскалации (не зависят от изменения снэпшота) ---
+                if notify_escalation is not None and get_escalations is not None:
+                    escalations = get_escalations(res.items)
+                    if escalations:
+                        # Текст эскалации формируем отдельно (в bot.py), тут только вызываем callback
+                        await notify_escalation(escalations, "ESCALATION")
+
+                # --- 2) Основной список (как раньше — только при изменении) ---
                 snapshot_hash, ids = make_ids_snapshot_hash(res.items)
 
                 state.last_calculated_count = len(ids)
@@ -154,7 +161,7 @@ async def polling_open_queue_loop(
                     ):
                         state.notify_skipped_rate_limit += 1
                     else:
-                        await notify(text)
+                        await notify_main(res.items, text)
                         state.last_notify_attempt_at = now
 
                         state.last_sent_snapshot = snapshot_hash
@@ -162,7 +169,6 @@ async def polling_open_queue_loop(
                         state.last_sent_count = len(ids)
                         state.last_sent_at = time.time()
 
-                        # Сохраняем в store сразу после успешной отправки
                         if store is not None:
                             save_polling_state_to_store(state, store, store_key)
 
