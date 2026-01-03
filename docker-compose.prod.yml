@@ -1,73 +1,79 @@
 # ============================================================================
-# docker-compose.yml — окружение приложения.
+# docker-compose.staging.yml — staging окружение.
 #
-# Сервисы:
-#   web        — Flask-приложение, обслуживаемое gunicorn
-#   bot        — воркер, выполняющий периодические запросы к web
-#   watchtower — агент CD (следит за обновлением образов и перезапускает сервисы)
-#
-# Особенности:
-#   - Образы приходят из GHCR (CI их туда пушит).
-#   - web и bot помечены label → watchtower обновляет только их.
-#   - watchtower нет своего.
+# Отличия от prod:
+#   - теги образов :v0.0.0
+#   - контейнеры: *-prod
+#   - порт: 8000
+#   - watchtower — отключен
 # ============================================================================
+# version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: cd-demo-redis-prod
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   web:
+<<<<<<< HEAD
     # Образ из GHCR (собирается GitHub Actions)
     image: ghcr.io/agrh1/testci:web-${APP_VERSION:-prod}
+=======
+    image: ghcr.io/agrh1/testci:web-${APP_VERSION}
+>>>>>>> staging
     container_name: cd-demo-web-prod
-
-    # Подгружаем переменные окружения из .env на сервере
     env_file:
       - /opt/testci/.envs/.env.prod
-
     environment:
-      # для Flask (production/debug)
-      FLASK_ENV: ${APP_ENV:-production}
-
+      FLASK_ENV: ${APP_ENV:-prod}
     ports:
-      # Внешний порт → внутренний 8000
       - "${APP_PORT:-8000}:8000"
-
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
-
-    # Docker healthcheck — очень важен!
-    # Watchtower сначала проверяет здоровье нового контейнера.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read(); print('ok')\""]
       interval: 30s
       timeout: 3s
       retries: 3
-      start_period: 10s
-
-    labels:
-      # Watchtower будет обновлять контейнер
-      com.centurylinklabs.watchtower.enable: "false"
-
 
   bot:
+<<<<<<< HEAD
     # Образ такой же, но команда другая
     image: ghcr.io/agrh1/testci:bot-${APP_VERSION:-prod}
+=======
+    image: ghcr.io/agrh1/testci:bot-${APP_VERSION}
+>>>>>>> staging
     container_name: cd-demo-bot-prod
-
-    command: ["python", "bot.py"]
-
     env_file:
       - /opt/testci/.envs/.env.prod
-
     environment:
-      WEB_HOST: "web"
+      FLASK_ENV: ${APP_ENV:-staging}
+      REDIS_URL: redis://redis:6379/0
+      WEB_HOST: "web-staging"   # важно: обращаемся к web-staging, а не к web (prod)
       WEB_PORT: "8000"
-      BOT_INTERVAL: "5"
-      APP_ENV: ${APP_ENV:-production}
-
     depends_on:
+      redis:
+        condition: service_healthy
       web:
         condition: service_healthy
-
     restart: unless-stopped
 
+<<<<<<< HEAD
     labels:
       com.centurylinklabs.watchtower.enable: "false"
+=======
+volumes:
+  redis_prod_data:
+
+>>>>>>> staging

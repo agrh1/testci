@@ -1,32 +1,46 @@
-# docker-compose.local.yml — локальный запуск (без CD/watchtower)
-# Поднимаем сервисы из текущего репозитория через build: .
+version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: cd-demo-redis-local
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_local_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   web:
-    build: .
-    container_name: testci-web-local
-    command: ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: cd-demo-web-local
     env_file:
       - .envs/.env.local
     ports:
-      - "${WEB_PORT:-8000}:8000"
-    restart: unless-stopped
-
-    # Healthcheck: docker будет отмечать контейнер как healthy/unhealthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read(); print('ok')\""]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-
-  bot:
-    build: .
-    container_name: testci-bot-local
-    command: ["python", "-u", "bot.py"]
-    env_file:
-      - .envs/.env.local
+      - "8000:8000"
     depends_on:
-      web:
+      redis:
         condition: service_healthy
     restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: cd-demo-bot-local
+    env_file:
+      - .envs/.env.local
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis_local_data:
