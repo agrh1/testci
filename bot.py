@@ -680,7 +680,8 @@ async def main() -> None:
     finally:
         stop_event.set()
         polling_task.cancel()
-        with contextlib.suppress(Exception):
+        # CancelledError наследуется от BaseException, поэтому Exception его не ловит
+        with contextlib.suppress(asyncio.CancelledError):
             await polling_task
 
 
