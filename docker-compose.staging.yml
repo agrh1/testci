@@ -5,24 +5,36 @@
 #   - теги образов :staging
 #   - контейнеры: *-staging
 #   - порт: 8001
-#   - НЕТ своего watchtower — использует тот же, что и prod.
+#   - watchtower — работает в режиме Pull
 # ============================================================================
+# version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: cd-demo-redis-staging
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_staging_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   web-staging:
     image: ghcr.io/agrh1/testci:web-staging
-
     container_name: cd-demo-web-staging
-
     env_file:
       - /opt/testci/.envs/.env.staging
-
     environment:
       FLASK_ENV: ${APP_ENV:-staging}
     ports:
-      # порт staging-сервиса наружу: 8001
       - "${APP_PORT:-8001}:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read(); print('ok')\""]
@@ -30,47 +42,49 @@ services:
       timeout: 3s
       retries: 3
     labels:
-      # тот же label → watchtower будет обновлять staging вместе с prod
-      com.centurylinklabs.watchtower.enable: "true"
+      - "com.centurylinklabs.watchtower.enable=true"
+
 
 
   bot-staging:
-
     image: ghcr.io/agrh1/testci:bot-staging
     container_name: cd-demo-bot-staging
-    command: ["python", "bot.py"]
     env_file:
       - /opt/testci/.envs/.env.staging
-
     environment:
+      FLASK_ENV: ${APP_ENV:-staging}
+      REDIS_URL: redis://redis:6379/0
       WEB_HOST: "web-staging"   # важно: обращаемся к web-staging, а не к web (prod)
       WEB_PORT: "8000"
-      BOT_INTERVAL: "5"
-      APP_ENV: ${APP_ENV:-staging}
-
     depends_on:
-      - web-staging
+      redis:
+        condition: service_healthy
+      web-staging:
+        condition: service_healthy
 
+        
     restart: unless-stopped
-
     labels:
-      com.centurylinklabs.watchtower.enable: "true"
-
+      - "com.centurylinklabs.watchtower.enable=true"
+        
   watchtower:
-    # Версия 1.7.1 совместима с Docker API 1.44+
-    image: containrrr/watchtower
-    container_name: watchtower-staging
-
+    image: containrrr/watchtower:1.7.1
+    container_name: cd-demo-watchtower-staging
+    restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-
+    command:
+      - "--interval"
+      - "60"
+      - "--cleanup"
+      - "--label-enable"
     environment:
+      TZ: Europe/Moscow
       # FIX для Docker 29+
       DOCKER_API_VERSION: "1.44"
-
       WATCHTOWER_POLL_INTERVAL: 300     # каждые 5 минут
       WATCHTOWER_CLEANUP: "true"        # удалять старые образы
       WATCHTOWER_ROLLBACK: "true"       # откат если контейнер не поднялся
       WATCHTOWER_LABEL_ENABLE: "true"   # обновлять только помеченные контейнеры
-
-    restart: unless-stopped
+volumes:
+  redis_staging_data:

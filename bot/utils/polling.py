@@ -8,6 +8,7 @@ from typing import Awaitable, Callable, Optional
 
 from bot.utils.sd_state import make_ids_snapshot_hash, normalize_tasks_for_message
 from bot.utils.sd_web_client import SdOpenResult, SdWebClient
+from bot.utils.state_store import RedisStateStore
 
 
 @dataclass
@@ -33,19 +34,12 @@ class PollingState:
     last_notify_attempt_at: Optional[float] = None
     notify_skipped_rate_limit: int = 0
 
-    # Диагностика последнего рассчитанного состояния (даже если не отправили)
+    # Диагностика последнего рассчитанного состояния
     last_calculated_count: Optional[int] = None
     last_calculated_at: Optional[float] = None
 
 
-def _fmt_state_message(
-    *,
-    normalized_items: list[dict[str, object]],
-    max_items_in_message: int,
-) -> str:
-    """
-    Формирует компактное сообщение о состоянии очереди.
-    """
+def _fmt_state_message(*, normalized_items: list[dict[str, object]], max_items_in_message: int) -> str:
     now_s = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 
     if len(normalized_items) == 0:
@@ -63,6 +57,39 @@ def _fmt_state_message(
     return "\n".join(lines)
 
 
+def load_polling_state_from_store(state: PollingState, store: RedisStateStore, key: str) -> None:
+    """
+    Восстанавливаем важные поля после рестарта.
+    Счётчики runs/failures не трогаем — это runtime метрики.
+    """
+    data = store.get_json(key)
+    if not data:
+        return
+
+    state.last_sent_snapshot = data.get("last_sent_snapshot")
+    state.last_sent_ids = data.get("last_sent_ids")
+    state.last_sent_count = data.get("last_sent_count")
+    state.last_sent_at = data.get("last_sent_at")
+
+    state.last_notify_attempt_at = data.get("last_notify_attempt_at")
+    state.notify_skipped_rate_limit = int(data.get("notify_skipped_rate_limit", 0))
+
+
+def save_polling_state_to_store(state: PollingState, store: RedisStateStore, key: str) -> None:
+    """
+    Сохраняем только то, что нужно для продолжения после рестарта.
+    """
+    payload = {
+        "last_sent_snapshot": state.last_sent_snapshot,
+        "last_sent_ids": state.last_sent_ids,
+        "last_sent_count": state.last_sent_count,
+        "last_sent_at": state.last_sent_at,
+        "last_notify_attempt_at": state.last_notify_attempt_at,
+        "notify_skipped_rate_limit": state.notify_skipped_rate_limit,
+    }
+    store.set_json(key, payload)
+
+
 async def polling_open_queue_loop(
     *,
     state: PollingState,
@@ -71,22 +98,20 @@ async def polling_open_queue_loop(
     notify: Callable[[str], Awaitable[None]],
     base_interval_s: float = 30.0,
     max_backoff_s: float = 300.0,
-    # Шаг 22:
     min_notify_interval_s: float = 60.0,
     max_items_in_message: int = 10,
+    # Шаг 23:
+    store: Optional[RedisStateStore] = None,
+    store_key: str = "bot:polling_state",
 ) -> None:
     """
-    Polling очереди открытых заявок.
-
-    Правило (шаг 21):
-    - сравниваем только состав очереди (Id)
-    - если состав изменился — отправляем ПОЛНЫЙ актуальный список с текущими названиями
-
-    Улучшения (шаг 22):
-    - rate-limit уведомлений: не чаще чем min_notify_interval_s
-    - компактный формат (max_items_in_message)
+    Polling очереди открытых заявок с персистентным состоянием.
     """
     interval_s = base_interval_s
+
+    # Восстановление состояния (если есть store)
+    if store is not None:
+        load_polling_state_from_store(state, store, store_key)
 
     while not stop_event.is_set():
         state.last_run_ts = time.time()
@@ -110,12 +135,9 @@ async def polling_open_queue_loop(
 
                 snapshot_hash, ids = make_ids_snapshot_hash(res.items)
 
-                # Диагностика "последнего рассчитанного состояния"
                 state.last_calculated_count = len(ids)
                 state.last_calculated_at = time.time()
 
-                # Первый успешный запуск: отправляем текущее состояние один раз
-                # Далее: отправляем только если изменился состав по ID
                 changed = (state.last_sent_snapshot is None) or (snapshot_hash != state.last_sent_snapshot)
 
                 if changed:
@@ -125,14 +147,11 @@ async def polling_open_queue_loop(
                         max_items_in_message=max_items_in_message,
                     )
 
-                    # Rate-limit
                     now = time.time()
                     if (
                         state.last_notify_attempt_at is not None
                         and (now - state.last_notify_attempt_at) < min_notify_interval_s
                     ):
-                        # Не отправляем сейчас, но состояние считаем "новым" —
-                        # чтобы при следующей попытке (после окна) отправить актуальное.
                         state.notify_skipped_rate_limit += 1
                     else:
                         await notify(text)
@@ -142,6 +161,10 @@ async def polling_open_queue_loop(
                         state.last_sent_ids = ids
                         state.last_sent_count = len(ids)
                         state.last_sent_at = time.time()
+
+                        # Сохраняем в store сразу после успешной отправки
+                        if store is not None:
+                            save_polling_state_to_store(state, store, store_key)
 
         except Exception as e:
             state.last_duration_ms = int((time.perf_counter() - t0) * 1000)

@@ -14,6 +14,7 @@ from aiogram.types import ErrorEvent, Message
 from bot import ping_reply_text
 from bot.utils.polling import PollingState, polling_open_queue_loop
 from bot.utils.sd_web_client import SdWebClient
+from bot.utils.state_store import RedisStateStore
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
 from bot.utils.web_guard import WebGuard
@@ -142,6 +143,10 @@ async def main() -> None:
         timeout_s=float(os.getenv("SD_WEB_TIMEOUT_S", "3")),
     )
 
+    # redis state store
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    state_store = RedisStateStore(redis_url, prefix="testci") if redis_url else None
+
     polling_state = PollingState()
     stop_event = asyncio.Event()
 
@@ -190,6 +195,8 @@ async def main() -> None:
             max_backoff_s=poll_max_backoff_s,
             min_notify_interval_s=min_notify_interval_s,
             max_items_in_message=max_items_in_message,
+            store=state_store,
+            store_key="bot:open_queue",
         ),
         name="polling_open_queue",
     )
