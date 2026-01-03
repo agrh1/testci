@@ -1,28 +1,3 @@
-"""
-Telegram bot (aiogram v3).
-
-Текущий этап:
-- Команды: /ping /status /needs_web /sd_open
-- Web-зависимая деградация через WebClient/WebGuard + WebReadyFilter
-- Интеграция ServiceDesk (IntraService) через НАШ web endpoint /sd/open
-- Polling очереди "Открыта" (StatusIds=31) с уведомлениями ТОЛЬКО при изменении состава очереди (snapshot по ID)
-  и отправкой полного актуального списка с текущими названиями при изменении.
-
-Переменные окружения (важные):
-- TELEGRAM_BOT_TOKEN (обяз.)
-- WEB_BASE_URL (по умолчанию http://web:8000)
-- ENVIRONMENT, GIT_SHA (для /status)
-- STRICT_READINESS (на web, не здесь)
-- ALERT_CHAT_ID (куда слать уведомления о смене очереди; если не задан — polling не шлёт в TG, только лог)
-- POLL_INTERVAL_S (по умолчанию 30)
-- POLL_MAX_BACKOFF_S (по умолчанию 300)
-- SD_WEB_TIMEOUT_S (по умолчанию 3)
-
-Важно про устойчивость:
-- Глобальный обработчик ошибок aiogram (dp.errors.register) логирует исключения из хендлеров.
-- Polling в фоне ловит исключения и не падает (см. polling_open_queue_loop).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -72,10 +47,6 @@ def _format_check_line(
 
 
 async def on_error(event: ErrorEvent) -> None:
-    """
-    Глобальный обработчик ошибок aiogram.
-    Логируем исключения, чтобы не было "тихих" падений в хендлерах.
-    """
     logger = logging.getLogger("bot.errors")
     logger.exception("Unhandled exception in update handling: %s", event.exception)
 
@@ -89,10 +60,6 @@ async def cmd_ping(message: Message) -> None:
 
 
 async def cmd_status(message: Message, web_client: WebClient, polling_state: PollingState) -> None:
-    """
-    Локальная команда: не блокируется guard'ом.
-    Показывает состояние web и polling.
-    """
     env = _get_env("ENVIRONMENT", "unknown")
     git_sha = _get_env("GIT_SHA", "unknown")
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
@@ -116,28 +83,27 @@ async def cmd_status(message: Message, web_client: WebClient, polling_state: Pol
         f"- last_success: {_fmt_ts(polling_state.last_success_ts)}",
         f"- last_error: {polling_state.last_error or '—'}",
         f"- last_duration_ms: {polling_state.last_duration_ms if polling_state.last_duration_ms is not None else '—'}",
+        "",
+        "SD QUEUE SNAPSHOT:",
+        f"- last_calculated_at: {_fmt_ts(polling_state.last_calculated_at)}",
+        f"- last_calculated_count: {polling_state.last_calculated_count if polling_state.last_calculated_count is not None else '—'}",
         f"- last_sent_at: {_fmt_ts(polling_state.last_sent_at)}",
         f"- last_sent_count: {polling_state.last_sent_count if polling_state.last_sent_count is not None else '—'}",
         f"- last_sent_snapshot: {polling_state.last_sent_snapshot or '—'}",
         f"- last_sent_ids: {polling_state.last_sent_ids if polling_state.last_sent_ids is not None else '—'}",
+        "",
+        "NOTIFY RATE-LIMIT:",
+        f"- last_notify_attempt_at: {_fmt_ts(polling_state.last_notify_attempt_at)}",
+        f"- notify_skipped_rate_limit: {polling_state.notify_skipped_rate_limit}",
     ]
     await message.answer("\n".join(lines))
 
 
 async def cmd_needs_web(message: Message) -> None:
-    """
-    Пример web-зависимой команды.
-    Доступ регулируется фильтром WebReadyFilter при регистрации.
-    """
     await message.answer("web готов ✅ (дальше будет реальная бизнес-логика)")
 
 
 async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
-    """
-    Ручная команда: показать текущий список открытых заявок (через web /sd/open).
-    Это отдельная команда от polling: polling шлёт в ALERT_CHAT_ID только при изменениях,
-    а /sd_open — по запросу пользователя.
-    """
     res = await sd_web_client.get_open(limit=20)
     if not res.ok:
         rid = f"\nrequest_id={res.request_id}" if res.request_id else ""
@@ -164,7 +130,6 @@ async def main() -> None:
     token = _get_env("TELEGRAM_BOT_TOKEN", required=True)
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000").rstrip("/")
 
-    # WebClient/WebGuard
     web_client = WebClient(
         base_url=web_base_url,
         timeout_s=float(os.getenv("WEB_TIMEOUT_S", "1.5")),
@@ -172,56 +137,47 @@ async def main() -> None:
     )
     web_guard = WebGuard(web_client)
 
-    # ServiceDesk client (через наш web)
     sd_web_client = SdWebClient(
         base_url=web_base_url,
         timeout_s=float(os.getenv("SD_WEB_TIMEOUT_S", "3")),
     )
 
-    # Polling state + task control
     polling_state = PollingState()
     stop_event = asyncio.Event()
 
     poll_interval_s = float(os.getenv("POLL_INTERVAL_S", "30"))
     poll_max_backoff_s = float(os.getenv("POLL_MAX_BACKOFF_S", "300"))
 
-    # Alert target
+    # Шаг 22
+    min_notify_interval_s = float(os.getenv("MIN_NOTIFY_INTERVAL_S", "60"))
+    max_items_in_message = int(os.getenv("MAX_ITEMS_IN_MESSAGE", "10"))
+
     alert_chat_id_raw = os.getenv("ALERT_CHAT_ID", "").strip()
     alert_chat_id = int(alert_chat_id_raw) if alert_chat_id_raw else None
 
     bot = Bot(token=token)
     dp = Dispatcher()
 
-    # DI
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["sd_web_client"] = sd_web_client
     dp.workflow_data["polling_state"] = polling_state
 
-    # Global error handler
     dp.errors.register(on_error)
 
-    # Commands
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_ping, Command("ping"))
     dp.message.register(cmd_status, Command("status"))
     dp.message.register(cmd_sd_open, Command("sd_open"))
-
-    # Web-dependent command example (guard via filter)
     dp.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
 
     async def notify(text: str) -> None:
-        """
-        Отправка уведомлений в Telegram.
-        Если ALERT_CHAT_ID не настроен — просто логируем и ничего не отправляем.
-        """
         if alert_chat_id is None:
             logging.getLogger("bot.polling").info(
                 "ALERT_CHAT_ID not set, skip notify: %s",
                 text.replace("\n", " | "),
             )
             return
-
         await bot.send_message(chat_id=alert_chat_id, text=text)
 
     polling_task = asyncio.create_task(
@@ -232,14 +188,18 @@ async def main() -> None:
             notify=notify,
             base_interval_s=poll_interval_s,
             max_backoff_s=poll_max_backoff_s,
+            min_notify_interval_s=min_notify_interval_s,
+            max_items_in_message=max_items_in_message,
         ),
         name="polling_open_queue",
     )
 
     logger.info(
-        "Bot started. WEB_BASE_URL=%s POLL_INTERVAL_S=%s ALERT_CHAT_ID=%s",
+        "Bot started. WEB_BASE_URL=%s POLL_INTERVAL_S=%s MIN_NOTIFY_INTERVAL_S=%s MAX_ITEMS_IN_MESSAGE=%s ALERT_CHAT_ID=%s",
         web_base_url,
         poll_interval_s,
+        min_notify_interval_s,
+        max_items_in_message,
         alert_chat_id_raw or "—",
     )
 
