@@ -8,7 +8,7 @@ from typing import Awaitable, Callable, Optional
 
 from bot.utils.sd_state import make_ids_snapshot_hash, normalize_tasks_for_message
 from bot.utils.sd_web_client import SdOpenResult, SdWebClient
-from bot.utils.state_store import RedisStateStore
+from bot.utils.state_store import StateStore
 
 
 @dataclass
@@ -57,7 +57,7 @@ def _fmt_state_message(*, normalized_items: list[dict[str, object]], max_items_i
     return "\n".join(lines)
 
 
-def load_polling_state_from_store(state: PollingState, store: RedisStateStore, key: str) -> None:
+def load_polling_state_from_store(state: PollingState, store: StateStore, key: str) -> None:
     """
     Восстанавливаем важные поля после рестарта.
     Счётчики runs/failures не трогаем — это runtime метрики.
@@ -75,7 +75,7 @@ def load_polling_state_from_store(state: PollingState, store: RedisStateStore, k
     state.notify_skipped_rate_limit = int(data.get("notify_skipped_rate_limit", 0))
 
 
-def save_polling_state_to_store(state: PollingState, store: RedisStateStore, key: str) -> None:
+def save_polling_state_to_store(state: PollingState, store: StateStore, key: str) -> None:
     """
     Сохраняем только то, что нужно для продолжения после рестарта.
     """
@@ -100,8 +100,8 @@ async def polling_open_queue_loop(
     max_backoff_s: float = 300.0,
     min_notify_interval_s: float = 60.0,
     max_items_in_message: int = 10,
-    # Шаг 23:
-    store: Optional[RedisStateStore] = None,
+    # Шаг 23/24: store может быть Redis или Memory (через ResilientStateStore)
+    store: Optional[StateStore] = None,
     store_key: str = "bot:polling_state",
 ) -> None:
     """

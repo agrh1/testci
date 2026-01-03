@@ -14,7 +14,7 @@ from aiogram.types import ErrorEvent, Message
 from bot import ping_reply_text
 from bot.utils.polling import PollingState, polling_open_queue_loop
 from bot.utils.sd_web_client import SdWebClient
-from bot.utils.state_store import RedisStateStore
+from bot.utils.state_store import MemoryStateStore, RedisStateStore, ResilientStateStore, StateStore
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
 from bot.utils.web_guard import WebGuard
@@ -60,11 +60,21 @@ async def cmd_ping(message: Message) -> None:
     await message.answer(ping_reply_text())
 
 
-async def cmd_status(message: Message, web_client: WebClient, polling_state: PollingState) -> None:
+async def cmd_status(
+    message: Message,
+    web_client: WebClient,
+    polling_state: PollingState,
+    state_store: Optional[StateStore],
+) -> None:
     env = _get_env("ENVIRONMENT", "unknown")
     git_sha = _get_env("GIT_SHA", "unknown")
     web_base_url = _get_env("WEB_BASE_URL", "http://web:8000")
     alert_chat_id = _get_env("ALERT_CHAT_ID", "")
+
+    # Диагностика state store (шаг 24): показываем, чем реально пользуемся сейчас
+    store_backend = state_store.backend() if state_store is not None else "disabled"
+    store_last_error = getattr(state_store, "last_error", None) if state_store is not None else None
+    store_last_ok_ts = getattr(state_store, "last_ok_ts", None) if state_store is not None else None
 
     health, ready = await web_client.check_health_ready(force=True)
 
@@ -73,6 +83,12 @@ async def cmd_status(message: Message, web_client: WebClient, polling_state: Pol
         f"GIT_SHA: {git_sha}",
         f"WEB_BASE_URL: {web_base_url}",
         f"ALERT_CHAT_ID: {alert_chat_id or '—'}",
+        "",
+        "STATE STORE:",
+        f"- enabled: {'yes' if state_store is not None else 'no'}",
+        f"- backend: {store_backend}",
+        f"- last_redis_ok: {_fmt_ts(store_last_ok_ts) if store_last_ok_ts else '—'}",
+        f"- last_redis_error: {store_last_error or '—'}",
         "",
         _format_check_line("web.health", health.ok, health.status, health.duration_ms, health.request_id, health.error),
         _format_check_line("web.ready", ready.ok, ready.status, ready.duration_ms, ready.request_id, ready.error),
@@ -143,9 +159,28 @@ async def main() -> None:
         timeout_s=float(os.getenv("SD_WEB_TIMEOUT_S", "3")),
     )
 
-    # redis state store
+    # state store (шаг 24)
+    #
+    # Если REDIS_URL задан — используем Redis, но НЕ доверяем ему на 100%.
+    # При любой ошибке Redis переключаемся на in-memory store, чтобы бот не падал.
     redis_url = os.getenv("REDIS_URL", "").strip()
-    state_store = RedisStateStore(redis_url, prefix="testci") if redis_url else None
+    state_store: Optional[StateStore] = None
+    if redis_url:
+        socket_timeout_s = float(os.getenv("REDIS_SOCKET_TIMEOUT_S", "1.0"))
+        socket_connect_timeout_s = float(os.getenv("REDIS_CONNECT_TIMEOUT_S", "1.0"))
+        primary = RedisStateStore(
+            redis_url,
+            prefix="testci",
+            socket_timeout_s=socket_timeout_s,
+            socket_connect_timeout_s=socket_connect_timeout_s,
+        )
+        fallback = MemoryStateStore(prefix="testci")
+        state_store = ResilientStateStore(primary, fallback)
+
+        # Пытаемся ping'нуть Redis на старте, чтобы /status сразу показывал реальный backend.
+        # Если Redis недоступен — ничего страшного, уйдём в memory.
+        with contextlib.suppress(Exception):
+            getattr(state_store, "ping", lambda: None)()
 
     polling_state = PollingState()
     stop_event = asyncio.Event()
@@ -167,6 +202,7 @@ async def main() -> None:
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["sd_web_client"] = sd_web_client
     dp.workflow_data["polling_state"] = polling_state
+    dp.workflow_data["state_store"] = state_store
 
     dp.errors.register(on_error)
 
@@ -217,7 +253,3 @@ async def main() -> None:
         polling_task.cancel()
         with contextlib.suppress(Exception):
             await polling_task
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
