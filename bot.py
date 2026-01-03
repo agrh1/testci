@@ -61,12 +61,6 @@ def _to_int(x: str) -> Optional[int]:
 
 
 def _parse_dest_from_env(prefix: str) -> Optional[Destination]:
-    """
-    Ожидаем:
-      <prefix>_CHAT_ID
-      <prefix>_THREAD_ID (опционально)
-    thread_id=0 считаем невалидным и превращаем в None.
-    """
     chat_id = _to_int(os.getenv(f"{prefix}_CHAT_ID", "").strip())
     if chat_id is None:
         return None
@@ -77,11 +71,6 @@ def _parse_dest_from_env(prefix: str) -> Optional[Destination]:
 
 
 def _parse_kv_args(text: str) -> dict[str, str]:
-    """
-    Простейший парсер аргументов вида:
-      /routes_test name="VIP test" service_id=101 customer_id=5001
-    Поддерживаем кавычки только для name="...".
-    """
     parts = text.split()
     out: dict[str, str] = {}
     for p in parts[1:]:
@@ -90,7 +79,6 @@ def _parse_kv_args(text: str) -> dict[str, str]:
         k, v = p.split("=", 1)
         out[k.strip().lower()] = v.strip()
 
-    # name="... с пробелами"
     if 'name="' in text:
         start = text.find('name="')
         if start != -1:
@@ -109,9 +97,6 @@ def _build_fake_item(
     service_id: Optional[int],
     customer_id: Optional[int],
 ) -> dict:
-    """
-    Создаём "виртуальную заявку", чтобы прогнать routing без реального API.
-    """
     it = {"Id": 999999, "Name": name}
     if service_id is not None:
         it[service_id_field] = service_id
@@ -120,13 +105,100 @@ def _build_fake_item(
     return it
 
 
+def _load_routing_from_env() -> tuple[list, Optional[Destination], str, str, Optional[str]]:
+    service_id_field = os.getenv("ROUTES_SERVICE_ID_FIELD", "ServiceId").strip() or "ServiceId"
+    customer_id_field = os.getenv("ROUTES_CUSTOMER_ID_FIELD", "CustomerId").strip() or "CustomerId"
+    default_dest = _parse_dest_from_env("ROUTES_DEFAULT") or _parse_dest_from_env("ALERT")
+
+    rules_raw = os.getenv("ROUTES_RULES", "").strip()
+    if not rules_raw:
+        return [], default_dest, service_id_field, customer_id_field, "ROUTES_RULES is empty"
+
+    try:
+        rules = parse_rules(json.loads(rules_raw))
+        return rules, default_dest, service_id_field, customer_id_field, None
+    except Exception as e:
+        return [], default_dest, service_id_field, customer_id_field, f"ROUTES_RULES parse error: {e}"
+
+
+def _load_escalation_from_env() -> tuple[bool, int, Optional[Destination], str, str, str, EscalationFilter, Optional[str]]:
+    """
+    Возвращает:
+      enabled, after_s, dest, mention, service_id_field, customer_id_field, filter, error
+    """
+    enabled = os.getenv("ESCALATION_ENABLED", "0").strip() in ("1", "true", "TRUE", "yes", "YES")
+    after_s = int(os.getenv("ESCALATION_AFTER_S", "600"))
+    dest = _parse_dest_from_env("ESCALATION_DEST")
+    mention = os.getenv("ESCALATION_MENTION", "@duty_engineer").strip() or "@duty_engineer"
+
+    # поля для фильтров
+    service_id_field = os.getenv("ESCALATION_SERVICE_ID_FIELD", os.getenv("ROUTES_SERVICE_ID_FIELD", "ServiceId")).strip() or "ServiceId"
+    customer_id_field = os.getenv("ESCALATION_CUSTOMER_ID_FIELD", os.getenv("ROUTES_CUSTOMER_ID_FIELD", "CustomerId")).strip() or "CustomerId"
+
+    flt = EscalationFilter()
+    raw = os.getenv("ESCALATION_FILTER", "").strip()
+    if raw:
+        try:
+            jf = json.loads(raw)
+            if isinstance(jf, dict):
+                keywords = tuple(
+                    k.strip().lower()
+                    for k in jf.get("keywords", [])
+                    if isinstance(k, str) and k.strip()
+                )
+                service_ids = tuple(int(x) for x in jf.get("service_ids", []) if str(x).strip().isdigit())
+                customer_ids = tuple(int(x) for x in jf.get("customer_ids", []) if str(x).strip().isdigit())
+                flt = EscalationFilter(keywords=keywords, service_ids=service_ids, customer_ids=customer_ids)
+        except Exception as e:
+            return enabled, after_s, dest, mention, service_id_field, customer_id_field, flt, f"ESCALATION_FILTER parse error: {e}"
+
+    return enabled, after_s, dest, mention, service_id_field, customer_id_field, flt, None
+
+
+def _match_escalation_filter(item: dict, flt: EscalationFilter, service_id_field: str, customer_id_field: str) -> bool:
+    """
+    Простой матч фильтра эскалации для тестовой команды.
+    Логика совпадает с EscalationManager:
+    - если фильтр пустой -> True
+    - иначе: keyword OR service_id OR customer_id
+    """
+    if not flt.keywords and not flt.service_ids and not flt.customer_ids:
+        return True
+
+    name = item.get("Name")
+    if flt.keywords and isinstance(name, str):
+        n = name.strip().lower()
+        if any(k in n for k in flt.keywords):
+            return True
+
+    if flt.service_ids:
+        try:
+            sid = int(item.get(service_id_field))
+            if sid in flt.service_ids:
+                return True
+        except Exception:
+            pass
+
+    if flt.customer_ids:
+        try:
+            cid = int(item.get(customer_id_field))
+            if cid in flt.customer_ids:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
 async def on_error(event: ErrorEvent) -> None:
     logger = logging.getLogger("bot.errors")
     logger.exception("Unhandled exception in update handling: %s", event.exception)
 
 
 async def cmd_start(message: Message) -> None:
-    await message.answer("Команды: /ping /status /needs_web /sd_open /routes_test /routes_debug /routes_send_test")
+    await message.answer(
+        "Команды: /ping /status /needs_web /sd_open /routes_test /routes_debug /routes_send_test /escalation_send_test"
+    )
 
 
 async def cmd_ping(message: Message) -> None:
@@ -177,14 +249,6 @@ async def cmd_status(
         f"- last_error: {polling_state.last_error or '—'}",
         f"- last_duration_ms: {polling_state.last_duration_ms if polling_state.last_duration_ms is not None else '—'}",
         "",
-        "SD QUEUE SNAPSHOT:",
-        f"- last_calculated_at: {_fmt_ts(polling_state.last_calculated_at)}",
-        f"- last_calculated_count: {polling_state.last_calculated_count if polling_state.last_calculated_count is not None else '—'}",
-        f"- last_sent_at: {_fmt_ts(polling_state.last_sent_at)}",
-        f"- last_sent_count: {polling_state.last_sent_count if polling_state.last_sent_count is not None else '—'}",
-        f"- last_sent_snapshot: {polling_state.last_sent_snapshot or '—'}",
-        f"- last_sent_ids: {polling_state.last_sent_ids if polling_state.last_sent_ids is not None else '—'}",
-        "",
         "NOTIFY RATE-LIMIT:",
         f"- last_notify_attempt_at: {_fmt_ts(polling_state.last_notify_attempt_at)}",
         f"- notify_skipped_rate_limit: {polling_state.notify_skipped_rate_limit}",
@@ -213,29 +277,8 @@ async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
     await message.answer("\n".join(lines))
 
 
-def _load_routing_from_env() -> tuple[list, Optional[Destination], str, str, Optional[str]]:
-    """
-    Возвращает:
-      rules, default_dest, service_id_field, customer_id_field, error
-    """
-    service_id_field = os.getenv("ROUTES_SERVICE_ID_FIELD", "ServiceId").strip() or "ServiceId"
-    customer_id_field = os.getenv("ROUTES_CUSTOMER_ID_FIELD", "CustomerId").strip() or "CustomerId"
-    default_dest = _parse_dest_from_env("ROUTES_DEFAULT") or _parse_dest_from_env("ALERT")
-
-    rules_raw = os.getenv("ROUTES_RULES", "").strip()
-    if not rules_raw:
-        return [], default_dest, service_id_field, customer_id_field, "ROUTES_RULES is empty"
-
-    try:
-        rules = parse_rules(json.loads(rules_raw))
-        return rules, default_dest, service_id_field, customer_id_field, None
-    except Exception as e:
-        return [], default_dest, service_id_field, customer_id_field, f"ROUTES_RULES parse error: {e}"
-
-
 async def cmd_routes_test(message: Message) -> None:
     args = _parse_kv_args(message.text or "")
-
     name = args.get("name", "test ticket")
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
@@ -252,10 +295,8 @@ async def cmd_routes_test(message: Message) -> None:
         service_id=service_id,
         customer_id=customer_id,
     )
-    items = [fake]
-
     dests = pick_destinations(
-        items=items,
+        items=[fake],
         rules=rules,
         default_dest=default_dest,
         service_id_field=service_id_field,
@@ -282,7 +323,6 @@ async def cmd_routes_test(message: Message) -> None:
 
 async def cmd_routes_debug(message: Message) -> None:
     args = _parse_kv_args(message.text or "")
-
     name = args.get("name", "test ticket")
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
@@ -299,10 +339,9 @@ async def cmd_routes_debug(message: Message) -> None:
         service_id=service_id,
         customer_id=customer_id,
     )
-    items = [fake]
 
     debug = explain_matches(
-        items=items,
+        items=[fake],
         rules=rules,
         service_id_field=service_id_field,
         customer_id_field=customer_id_field,
@@ -326,21 +365,12 @@ async def cmd_routes_debug(message: Message) -> None:
             f"{idx}) {matched} -> chat_id={dest['chat_id']}, thread_id={dest['thread_id'] if dest['thread_id'] is not None else '—'}"
         )
         lines.append(f"   reason: {reason}")
-        lines.append(
-            f"   criteria: keywords={r['criteria']['keywords']} service_ids={r['criteria']['service_ids']} customer_ids={r['criteria']['customer_ids']}"
-        )
 
     await message.answer("\n".join(lines))
 
 
 async def cmd_routes_send_test(message: Message, bot: Bot) -> None:
-    """
-    /routes_send_test name="VIP авария" service_id=101 customer_id=5001
-
-    Реально отправляет проверочное сообщение в каждый рассчитанный destination.
-    """
     args = _parse_kv_args(message.text or "")
-
     name = args.get("name", "test ticket")
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
@@ -357,10 +387,9 @@ async def cmd_routes_send_test(message: Message, bot: Bot) -> None:
         service_id=service_id,
         customer_id=customer_id,
     )
-    items = [fake]
 
     dests = pick_destinations(
-        items=items,
+        items=[fake],
         rules=rules,
         default_dest=default_dest,
         service_id_field=service_id_field,
@@ -383,29 +412,91 @@ async def cmd_routes_send_test(message: Message, bot: Bot) -> None:
 
     sent = 0
     failed: list[str] = []
-
     for d in dests:
         try:
-            await bot.send_message(
-                chat_id=d.chat_id,
-                message_thread_id=d.thread_id,
-                text=text,
-            )
+            await bot.send_message(chat_id=d.chat_id, message_thread_id=d.thread_id, text=text)
             sent += 1
         except Exception as e:
             failed.append(f"chat_id={d.chat_id}, thread_id={d.thread_id if d.thread_id is not None else '—'} -> {e}")
 
-    lines = [
-        "📨 routes_send_test result",
-        f"- destinations: {len(dests)}",
-        f"- sent: {sent}",
-    ]
+    lines = ["📨 routes_send_test result", f"- destinations: {len(dests)}", f"- sent: {sent}"]
     if failed:
         lines.append(f"- failed: {len(failed)}")
         lines.append("")
         lines.extend(failed)
 
     await message.answer("\n".join(lines))
+
+
+async def cmd_escalation_send_test(message: Message, bot: Bot) -> None:
+    """
+    /escalation_send_test name="VIP авария" service_id=101 customer_id=5001
+
+    Реально отправляет тестовое эскалационное сообщение в ESCALATION_DEST.
+    Перед отправкой проверяет, проходит ли заявка через ESCALATION_FILTER.
+    (Порог времени after_s здесь НЕ ждём — цель команды проверить доставку и конфиг.)
+    """
+    args = _parse_kv_args(message.text or "")
+    name = args.get("name", "test ticket")
+    service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
+    customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
+
+    enabled, after_s, dest, mention, service_id_field, customer_id_field, flt, err = _load_escalation_from_env()
+    if err:
+        await message.answer(f"❌ {err}")
+        return
+
+    if not enabled:
+        await message.answer("❌ ESCALATION_ENABLED=0 (включите эскалацию в env)")
+        return
+
+    if dest is None:
+        await message.answer("❌ ESCALATION_DEST_CHAT_ID не задан (и/или некорректен)")
+        return
+
+    fake = _build_fake_item(
+        name=name,
+        service_id_field=service_id_field,
+        customer_id_field=customer_id_field,
+        service_id=service_id,
+        customer_id=customer_id,
+    )
+
+    matched = _match_escalation_filter(fake, flt, service_id_field, customer_id_field)
+    if not matched:
+        await message.answer(
+            "⚠️ Заявка НЕ проходит ESCALATION_FILTER, поэтому тестовое сообщение НЕ отправляю.\n"
+            f"Параметры:\n- Name={name}\n- {service_id_field}={service_id}\n- {customer_id_field}={customer_id}\n"
+            f"Фильтр: keywords={list(flt.keywords)} service_ids={list(flt.service_ids)} customer_ids={list(flt.customer_ids)}"
+        )
+        return
+
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+    text = (
+        "🚨 TEST MESSAGE (escalation)\n"
+        f"Time: {ts}\n"
+        f"After_s (config): {after_s}\n"
+        f"{mention} заберите в работу, пожалуйста.\n"
+        "\n"
+        f"- #{fake.get('Id')}: {fake.get('Name')}\n"
+        f"- {service_id_field}: {service_id if service_id is not None else '—'}\n"
+        f"- {customer_id_field}: {customer_id if customer_id is not None else '—'}\n"
+        "\n"
+        "Если вы это видите — доставка эскалации в ESCALATION_DEST работает ✅"
+    )
+
+    try:
+        await bot.send_message(chat_id=dest.chat_id, message_thread_id=dest.thread_id, text=text)
+        await message.answer(
+            "📨 escalation_send_test: отправлено ✅\n"
+            f"- dest chat_id={dest.chat_id}, thread_id={dest.thread_id if dest.thread_id is not None else '—'}"
+        )
+    except Exception as e:
+        await message.answer(
+            "❌ escalation_send_test: не удалось отправить\n"
+            f"- dest chat_id={dest.chat_id}, thread_id={dest.thread_id if dest.thread_id is not None else '—'}\n"
+            f"- error: {e}"
+        )
 
 
 def _build_escalation_text(items: list[dict], mention: str) -> str:
@@ -442,7 +533,6 @@ async def main() -> None:
         timeout_s=float(os.getenv("SD_WEB_TIMEOUT_S", "3")),
     )
 
-    # --- state store (шаг 24) ---
     redis_url = os.getenv("REDIS_URL", "").strip()
     state_store: Optional[StateStore] = None
     if redis_url:
@@ -467,7 +557,7 @@ async def main() -> None:
     min_notify_interval_s = float(os.getenv("MIN_NOTIFY_INTERVAL_S", "60"))
     max_items_in_message = int(os.getenv("MAX_ITEMS_IN_MESSAGE", "10"))
 
-    # --- ROUTING (шаг 25) ---
+    # routing
     default_dest = _parse_dest_from_env("ROUTES_DEFAULT") or _parse_dest_from_env("ALERT")
     service_id_field = os.getenv("ROUTES_SERVICE_ID_FIELD", "ServiceId").strip() or "ServiceId"
     customer_id_field = os.getenv("ROUTES_CUSTOMER_ID_FIELD", "CustomerId").strip() or "CustomerId"
@@ -481,7 +571,7 @@ async def main() -> None:
             logger.error("ROUTES_RULES parse error: %s", e)
             rules = []
 
-    # --- ESCALATION (шаг 25) ---
+    # escalation
     esc_enabled = os.getenv("ESCALATION_ENABLED", "0").strip() in ("1", "true", "TRUE", "yes", "YES")
     esc_after_s = int(os.getenv("ESCALATION_AFTER_S", "600"))
     esc_dest = _parse_dest_from_env("ESCALATION_DEST")
@@ -538,6 +628,7 @@ async def main() -> None:
     dp.message.register(cmd_routes_test, Command("routes_test"))
     dp.message.register(cmd_routes_debug, Command("routes_debug"))
     dp.message.register(cmd_routes_send_test, Command("routes_send_test"))
+    dp.message.register(cmd_escalation_send_test, Command("escalation_send_test"))
 
     async def notify_main(items: list[dict], text: str) -> None:
         dests = pick_destinations(
