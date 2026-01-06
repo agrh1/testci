@@ -1,14 +1,15 @@
 """
-Работа с Postgres для хранения конфигурации бота.
+Работа с Postgres для хранения конфигурации бота + истории версий.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from typing import Any, Optional, Tuple
 
-from sqlalchemy import Column, Integer, Text, create_engine
+from sqlalchemy import Column, DateTime, Integer, Text, create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -21,6 +22,16 @@ class BotConfig(Base):
     id = Column(Integer, primary_key=True)
     version = Column(Integer, nullable=False)
     config_json = Column(Text, nullable=False)
+
+
+class BotConfigHistory(Base):
+    __tablename__ = "bot_config_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, nullable=False)
+    config_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    comment = Column(Text, nullable=True)
 
 
 def _database_url() -> str:
@@ -73,14 +84,85 @@ def read_config(engine: Engine) -> Tuple[Optional[dict[str, Any]], Optional[str]
         return None, str(e)
 
 
-def write_config(engine: Engine, cfg: dict[str, Any]) -> int:
+def write_config(engine: Engine, cfg: dict[str, Any], comment: str | None = None) -> int:
+    """
+    Сохраняет новый конфиг:
+    - старую версию кладёт в history
+    - увеличивает version
+    """
     Session = sessionmaker(bind=engine, future=True)
     with Session() as s:
-        row = s.get(BotConfig, 1)
-        if not row:
+        current = s.get(BotConfig, 1)
+        if not current:
             raise RuntimeError("config row missing")
 
-        row.version += 1
-        row.config_json = json.dumps(cfg, ensure_ascii=False)
+        # сохранить текущую версию в history
+        s.add(
+            BotConfigHistory(
+                version=current.version,
+                config_json=current.config_json,
+                comment=comment,
+            )
+        )
+
+        # обновить текущую
+        current.version += 1
+        current.config_json = json.dumps(cfg, ensure_ascii=False)
+
         s.commit()
-        return row.version
+        return current.version
+
+
+def list_history(engine: Engine, limit: int = 20) -> list[dict[str, Any]]:
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as s:
+        rows = (
+            s.query(BotConfigHistory)
+            .order_by(BotConfigHistory.version.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "version": r.version,
+                "created_at": r.created_at.isoformat(),
+                "comment": r.comment,
+            }
+            for r in rows
+        ]
+
+
+def rollback_to_version(engine: Engine, version: int) -> int:
+    """
+    Делает rollback:
+    - берёт config_json из history
+    - записывает его как новую текущую версию
+    """
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as s:
+        hist = (
+            s.query(BotConfigHistory)
+            .filter(BotConfigHistory.version == version)
+            .one_or_none()
+        )
+        if not hist:
+            raise RuntimeError(f"history version {version} not found")
+
+        current = s.get(BotConfig, 1)
+        if not current:
+            raise RuntimeError("config row missing")
+
+        # сохранить текущую в history
+        s.add(
+            BotConfigHistory(
+                version=current.version,
+                config_json=current.config_json,
+                comment=f"rollback from v{current.version} to v{version}",
+            )
+        )
+
+        current.version += 1
+        current.config_json = hist.config_json
+
+        s.commit()
+        return current.version

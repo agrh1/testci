@@ -11,7 +11,15 @@ import requests
 from flask import Flask, g, jsonify, request
 
 from web.config_validation import ConfigValidationError, validate_config
-from web.db import create_db_engine, db_enabled, init_db, read_config, write_config
+from web.db import (
+    create_db_engine,
+    db_enabled,
+    init_db,
+    list_history,
+    read_config,
+    rollback_to_version,
+    write_config,
+)
 
 app = Flask(__name__)
 
@@ -459,6 +467,42 @@ def put_config():
         new_version = write_config(_db_engine, data)
     except Exception as e:
         return jsonify({"error": "db_write_failed", "detail": str(e)}), 500
+
+    return jsonify({"ok": True, "version": new_version})
+
+@app.get("/config/history")
+def get_config_history():
+    admin_token = os.getenv("CONFIG_ADMIN_TOKEN", "").strip()
+    got = request.headers.get("X-Admin-Token", "").strip()
+    if not admin_token or got != admin_token:
+        return jsonify({"error": "unauthorized"}), 401
+
+    if _db_engine is None:
+        return jsonify({"error": "db disabled"}), 500
+
+    return jsonify(list_history(_db_engine))
+
+
+@app.post("/config/rollback")
+def rollback_config():
+    admin_token = os.getenv("CONFIG_ADMIN_TOKEN", "").strip()
+    got = request.headers.get("X-Admin-Token", "").strip()
+    if not admin_token or got != admin_token:
+        return jsonify({"error": "unauthorized"}), 401
+
+    if _db_engine is None:
+        return jsonify({"error": "db disabled"}), 500
+
+    try:
+        data = request.get_json(force=True)
+        version = int(data.get("version"))
+    except Exception:
+        return jsonify({"error": "invalid payload"}), 400
+
+    try:
+        new_version = rollback_to_version(_db_engine, version)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
     return jsonify({"ok": True, "version": new_version})
 
