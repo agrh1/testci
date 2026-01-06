@@ -32,6 +32,7 @@ REQUIRED_ENV_VARS = [
     "SERVICEDESK_BASE_URL",
     "SERVICEDESK_LOGIN",
     "SERVICEDESK_PASSWORD",
+    "TELEGRAM_BOT_TOKEN",
 ]
 
 # Оставляем токен как "опциональный legacy" (вдруг где-то уже используется),

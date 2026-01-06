@@ -555,12 +555,12 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("bot")
 
-    token = _get_env("BOT_TOKEN", required=True)
+    token = _get_env("TELEGRAM_BOT_TOKEN", required=True)
 
     web_base_url = _get_env("WEB_BASE_URL", required=True)
     web_client = WebClient(base_url=web_base_url)
 
-    web_guard = WebGuard(web_client=web_client)
+    web_guard = WebGuard( client=web_client)
     sd_web_client = SdWebClient(web_client=web_client)
 
     # state store
