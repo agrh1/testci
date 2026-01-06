@@ -19,5 +19,4 @@ COPY . /app
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA}
 
-CMD ["python", "-u", "bot.py"]
-
+CMD ["python", "-u", "-m", "bot.bot_app"]

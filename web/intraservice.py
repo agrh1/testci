@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from flask import current_app
@@ -34,7 +34,14 @@ def _cfg_from_env() -> IntraServiceConfig:
     return IntraServiceConfig(base_url=base_url, login=login, password=password, timeout_s=timeout_s)
 
 
-def list_tasks_by_status(*, status_id: int, page: int, pagesize: int, fields: str) -> dict[str, Any]:
+def list_tasks_by_status(
+    *,
+    status_id: int,
+    page: int,
+    pagesize: int,
+    fields: str,
+    request_id: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Возвращает сырой JSON IntraService для /api/task.
 
@@ -50,12 +57,16 @@ def list_tasks_by_status(*, status_id: int, page: int, pagesize: int, fields: st
         "fields": fields,
     }
 
+    headers = {"Accept": "application/json"}
+    if request_id:
+        headers["X-Request-ID"] = request_id
+
     r = requests.get(
         url,
         params=params,
         auth=(cfg.login, cfg.password),  # Basic Auth :contentReference[oaicite:7]{index=7}
         timeout=cfg.timeout_s,
-        headers={"Accept": "application/json"},
+        headers=headers,
     )
 
     # IntraService при ошибке может возвращать json с Message/MessageDetail. :contentReference[oaicite:8]{index=8}
