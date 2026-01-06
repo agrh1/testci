@@ -13,9 +13,11 @@ from aiogram.filters import Command
 from aiogram.types import ErrorEvent, Message
 
 from bot import ping_reply_text
-from bot.utils.escalation import EscalationFilter, EscalationManager
+from bot.utils.config_client import ConfigClient
+from bot.utils.escalation import EscalationFilter
 from bot.utils.notify_router import Destination, explain_matches, parse_rules, pick_destinations
 from bot.utils.polling import PollingState, polling_open_queue_loop
+from bot.utils.runtime_config import RuntimeConfig
 from bot.utils.sd_web_client import SdWebClient
 from bot.utils.state_store import MemoryStateStore, RedisStateStore, ResilientStateStore, StateStore
 from bot.utils.web_client import WebClient
@@ -210,6 +212,7 @@ async def cmd_status(
     web_client: WebClient,
     polling_state: PollingState,
     state_store: Optional[StateStore],
+    runtime_config: RuntimeConfig,
 ) -> None:
     env = _get_env("ENVIRONMENT", "unknown")
     git_sha = _get_env("GIT_SHA", "unknown")
@@ -240,6 +243,12 @@ async def cmd_status(
         "",
         _format_check_line("web.health", health.ok, health.status, health.duration_ms, health.request_id, health.error),
         _format_check_line("web.ready", ready.ok, ready.status, ready.duration_ms, ready.request_id, ready.error),
+        "",
+        "CONFIG:",
+        f"- source: {runtime_config.source}",
+        f"- version: {runtime_config.version}",
+        f"- routing.rules: {len(runtime_config.routing.rules)}",
+        f"- escalation.enabled: {'yes' if runtime_config.escalation.enabled else 'no'}",
         "",
         "SD QUEUE POLLING:",
         f"- runs: {polling_state.runs}",
@@ -277,38 +286,40 @@ async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
     await message.answer("\n".join(lines))
 
 
-async def cmd_routes_test(message: Message) -> None:
+async def cmd_routes_test(message: Message, config_client: ConfigClient, runtime_config: RuntimeConfig) -> None:
     args = _parse_kv_args(message.text or "")
     name = args.get("name", "test ticket")
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
 
-    rules, default_dest, service_id_field, customer_id_field, err = _load_routing_from_env()
-    if err:
-        await message.answer(f"❌ {err}")
-        return
+    # Подтягиваем конфиг (TTL-кэш внутри клиента). Ошибка не должна ломать команду.
+    res = await config_client.get(force=False)
+    if res.ok and res.data:
+        runtime_config.apply_from_web_config(res.data)
 
+    routing = runtime_config.routing
     fake = _build_fake_item(
         name=name,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        service_id_field=routing.service_id_field,
+        customer_id_field=routing.customer_id_field,
         service_id=service_id,
         customer_id=customer_id,
     )
     dests = pick_destinations(
         items=[fake],
-        rules=rules,
-        default_dest=default_dest,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        rules=routing.rules,
+        default_dest=routing.default_dest,
+        service_id_field=routing.service_id_field,
+        customer_id_field=routing.customer_id_field,
     )
 
     lines = [
         "🧪 routes_test",
         f"- Name: {name}",
-        f"- {service_id_field}: {service_id if service_id is not None else '—'}",
-        f"- {customer_id_field}: {customer_id if customer_id is not None else '—'}",
-        f"- rules: {len(rules)}",
+        f"- {routing.service_id_field}: {service_id if service_id is not None else '—'}",
+        f"- {routing.customer_id_field}: {customer_id if customer_id is not None else '—'}",
+        f"- rules: {len(routing.rules)}",
+        f"- config: v{runtime_config.version} ({runtime_config.source})",
         "",
         "Destinations:",
     ]
@@ -321,38 +332,40 @@ async def cmd_routes_test(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-async def cmd_routes_debug(message: Message) -> None:
+async def cmd_routes_debug(message: Message, config_client: ConfigClient, runtime_config: RuntimeConfig) -> None:
     args = _parse_kv_args(message.text or "")
     name = args.get("name", "test ticket")
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
 
-    rules, _default_dest, service_id_field, customer_id_field, err = _load_routing_from_env()
-    if err:
-        await message.answer(f"❌ {err}")
-        return
+    res = await config_client.get(force=False)
+    if res.ok and res.data:
+        runtime_config.apply_from_web_config(res.data)
+
+    routing = runtime_config.routing
 
     fake = _build_fake_item(
         name=name,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        service_id_field=routing.service_id_field,
+        customer_id_field=routing.customer_id_field,
         service_id=service_id,
         customer_id=customer_id,
     )
 
     debug = explain_matches(
         items=[fake],
-        rules=rules,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        rules=routing.rules,
+        service_id_field=routing.service_id_field,
+        customer_id_field=routing.customer_id_field,
     )
 
     lines = [
         "🔎 routes_debug",
         f"- Name: {name}",
-        f"- {service_id_field}: {service_id if service_id is not None else '—'}",
-        f"- {customer_id_field}: {customer_id if customer_id is not None else '—'}",
-        f"- rules: {len(rules)}",
+        f"- {routing.service_id_field}: {service_id if service_id is not None else '—'}",
+        f"- {routing.customer_id_field}: {customer_id if customer_id is not None else '—'}",
+        f"- rules: {len(routing.rules)}",
+        f"- config: v{runtime_config.version} ({runtime_config.source})",
         "",
     ]
 
@@ -369,31 +382,32 @@ async def cmd_routes_debug(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-async def cmd_routes_send_test(message: Message, bot: Bot) -> None:
+async def cmd_routes_send_test(message: Message, bot: Bot, config_client: ConfigClient, runtime_config: RuntimeConfig) -> None:
     args = _parse_kv_args(message.text or "")
     name = args.get("name", "test ticket")
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
 
-    rules, default_dest, service_id_field, customer_id_field, err = _load_routing_from_env()
-    if err:
-        await message.answer(f"❌ {err}")
-        return
+    res = await config_client.get(force=False)
+    if res.ok and res.data:
+        runtime_config.apply_from_web_config(res.data)
+
+    routing = runtime_config.routing
 
     fake = _build_fake_item(
         name=name,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        service_id_field=routing.service_id_field,
+        customer_id_field=routing.customer_id_field,
         service_id=service_id,
         customer_id=customer_id,
     )
 
     dests = pick_destinations(
         items=[fake],
-        rules=rules,
-        default_dest=default_dest,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        rules=routing.rules,
+        default_dest=routing.default_dest,
+        service_id_field=routing.service_id_field,
+        customer_id_field=routing.customer_id_field,
     )
 
     if not dests:
@@ -405,8 +419,8 @@ async def cmd_routes_send_test(message: Message, bot: Bot) -> None:
         "🧪 TEST MESSAGE (routes)\n"
         f"Time: {ts}\n"
         f"Name: {name}\n"
-        f"{service_id_field}: {service_id if service_id is not None else '—'}\n"
-        f"{customer_id_field}: {customer_id if customer_id is not None else '—'}\n"
+        f"{routing.service_id_field}: {service_id if service_id is not None else '—'}\n"
+        f"{routing.customer_id_field}: {customer_id if customer_id is not None else '—'}\n"
         "Если вы это видите — доставка в этот destination работает ✅"
     )
 
@@ -428,7 +442,12 @@ async def cmd_routes_send_test(message: Message, bot: Bot) -> None:
     await message.answer("\n".join(lines))
 
 
-async def cmd_escalation_send_test(message: Message, bot: Bot) -> None:
+async def cmd_escalation_send_test(
+    message: Message,
+    bot: Bot,
+    config_client: ConfigClient,
+    runtime_config: RuntimeConfig,
+) -> None:
     """
     /escalation_send_test name="VIP авария" service_id=101 customer_id=5001
 
@@ -441,33 +460,34 @@ async def cmd_escalation_send_test(message: Message, bot: Bot) -> None:
     service_id = _to_int(args.get("service_id", "")) if "service_id" in args else None
     customer_id = _to_int(args.get("customer_id", "")) if "customer_id" in args else None
 
-    enabled, after_s, dest, mention, service_id_field, customer_id_field, flt, err = _load_escalation_from_env()
-    if err:
-        await message.answer(f"❌ {err}")
+    # Подтягиваем актуальный конфиг (TTL-кэш внутри клиента).
+    res = await config_client.get(force=False)
+    if res.ok and res.data:
+        runtime_config.apply_from_web_config(res.data)
+
+    esc = runtime_config.escalation
+    if not esc.enabled:
+        await message.answer("❌ Эскалация отключена (escalation.enabled=false)")
         return
 
-    if not enabled:
-        await message.answer("❌ ESCALATION_ENABLED=0 (включите эскалацию в env)")
-        return
-
-    if dest is None:
-        await message.answer("❌ ESCALATION_DEST_CHAT_ID не задан (и/или некорректен)")
+    if esc.dest is None:
+        await message.answer("❌ escalation.dest не задан (chat_id обязателен)")
         return
 
     fake = _build_fake_item(
         name=name,
-        service_id_field=service_id_field,
-        customer_id_field=customer_id_field,
+        service_id_field=esc.service_id_field,
+        customer_id_field=esc.customer_id_field,
         service_id=service_id,
         customer_id=customer_id,
     )
 
-    matched = _match_escalation_filter(fake, flt, service_id_field, customer_id_field)
+    matched = _match_escalation_filter(fake, esc.flt, esc.service_id_field, esc.customer_id_field)
     if not matched:
         await message.answer(
             "⚠️ Заявка НЕ проходит ESCALATION_FILTER, поэтому тестовое сообщение НЕ отправляю.\n"
-            f"Параметры:\n- Name={name}\n- {service_id_field}={service_id}\n- {customer_id_field}={customer_id}\n"
-            f"Фильтр: keywords={list(flt.keywords)} service_ids={list(flt.service_ids)} customer_ids={list(flt.customer_ids)}"
+            f"Параметры:\n- Name={name}\n- {esc.service_id_field}={service_id}\n- {esc.customer_id_field}={customer_id}\n"
+            f"Фильтр: keywords={list(esc.flt.keywords)} service_ids={list(esc.flt.service_ids)} customer_ids={list(esc.flt.customer_ids)}"
         )
         return
 
@@ -475,26 +495,27 @@ async def cmd_escalation_send_test(message: Message, bot: Bot) -> None:
     text = (
         "🚨 TEST MESSAGE (escalation)\n"
         f"Time: {ts}\n"
-        f"After_s (config): {after_s}\n"
-        f"{mention} заберите в работу, пожалуйста.\n"
+        f"After_s (config): {esc.after_s}\n"
+        f"{esc.mention} заберите в работу, пожалуйста.\n"
         "\n"
         f"- #{fake.get('Id')}: {fake.get('Name')}\n"
-        f"- {service_id_field}: {service_id if service_id is not None else '—'}\n"
-        f"- {customer_id_field}: {customer_id if customer_id is not None else '—'}\n"
+        f"- {esc.service_id_field}: {service_id if service_id is not None else '—'}\n"
+        f"- {esc.customer_id_field}: {customer_id if customer_id is not None else '—'}\n"
         "\n"
         "Если вы это видите — доставка эскалации в ESCALATION_DEST работает ✅"
     )
 
     try:
-        await bot.send_message(chat_id=dest.chat_id, message_thread_id=dest.thread_id, text=text)
+        await bot.send_message(chat_id=esc.dest.chat_id, message_thread_id=esc.dest.thread_id, text=text)
         await message.answer(
             "📨 escalation_send_test: отправлено ✅\n"
-            f"- dest chat_id={dest.chat_id}, thread_id={dest.thread_id if dest.thread_id is not None else '—'}"
+            f"- dest chat_id={esc.dest.chat_id}, thread_id={esc.dest.thread_id if esc.dest.thread_id is not None else '—'}\n"
+            f"- config: v{runtime_config.version} ({runtime_config.source})"
         )
     except Exception as e:
         await message.answer(
             "❌ escalation_send_test: не удалось отправить\n"
-            f"- dest chat_id={dest.chat_id}, thread_id={dest.thread_id if dest.thread_id is not None else '—'}\n"
+            f"- dest chat_id={esc.dest.chat_id}, thread_id={esc.dest.thread_id if esc.dest.thread_id is not None else '—'}\n"
             f"- error: {e}"
         )
 
@@ -533,6 +554,21 @@ async def main() -> None:
         timeout_s=float(os.getenv("SD_WEB_TIMEOUT_S", "3")),
     )
 
+    # -----------------------------
+    # Dynamic config (шаг 26)
+    # -----------------------------
+    config_url = os.getenv("CONFIG_URL", f"{web_base_url}/config").strip() or f"{web_base_url}/config"
+    config_token = os.getenv("CONFIG_TOKEN", "").strip()
+    config_ttl_s = float(os.getenv("CONFIG_TTL_S", "60"))
+    config_timeout_s = float(os.getenv("CONFIG_TIMEOUT_S", "2.5"))
+
+    config_client = ConfigClient(
+        url=config_url,
+        token=config_token,
+        timeout_s=config_timeout_s,
+        cache_ttl_s=config_ttl_s,
+    )
+
     redis_url = os.getenv("REDIS_URL", "").strip()
     state_store: Optional[StateStore] = None
     if redis_url:
@@ -557,56 +593,28 @@ async def main() -> None:
     min_notify_interval_s = float(os.getenv("MIN_NOTIFY_INTERVAL_S", "60"))
     max_items_in_message = int(os.getenv("MAX_ITEMS_IN_MESSAGE", "10"))
 
-    # routing
-    default_dest = _parse_dest_from_env("ROUTES_DEFAULT") or _parse_dest_from_env("ALERT")
-    service_id_field = os.getenv("ROUTES_SERVICE_ID_FIELD", "ServiceId").strip() or "ServiceId"
-    customer_id_field = os.getenv("ROUTES_CUSTOMER_ID_FIELD", "CustomerId").strip() or "CustomerId"
+    runtime_config = RuntimeConfig(logger=logger, store=state_store, escalation_store_key="bot:escalation")
 
-    rules_raw = os.getenv("ROUTES_RULES", "").strip()
-    rules = []
-    if rules_raw:
-        try:
-            rules = parse_rules(json.loads(rules_raw))
-        except Exception as e:
-            logger.error("ROUTES_RULES parse error: %s", e)
-            rules = []
+    async def refresh_runtime_config(force: bool = False) -> None:
+        """Подтягивает /config и, если версия выросла, применяет.
 
-    # escalation
-    esc_enabled = os.getenv("ESCALATION_ENABLED", "0").strip() in ("1", "true", "TRUE", "yes", "YES")
-    esc_after_s = int(os.getenv("ESCALATION_AFTER_S", "600"))
-    esc_dest = _parse_dest_from_env("ESCALATION_DEST")
-    esc_mention = os.getenv("ESCALATION_MENTION", "@duty_engineer").strip() or "@duty_engineer"
+        Важно:
+        - при ошибке fetch не падаем (ConfigClient сам вернёт cached, если он есть)
+        - runtime_config сам валидирует и применяет только корректные обновления
+        """
+        res = await config_client.get(force=force)
+        if not res.ok or res.data is None:
+            if res.error:
+                logger.warning("config fetch failed: %s", res.error)
+            return
 
-    esc_service_id_field = os.getenv("ESCALATION_SERVICE_ID_FIELD", service_id_field).strip() or service_id_field
-    esc_customer_id_field = os.getenv("ESCALATION_CUSTOMER_ID_FIELD", customer_id_field).strip() or customer_id_field
-
-    esc_filter_raw = os.getenv("ESCALATION_FILTER", "").strip()
-    esc_filter = EscalationFilter()
-    if esc_filter_raw:
-        try:
-            jf = json.loads(esc_filter_raw)
-            if isinstance(jf, dict):
-                keywords = tuple(
-                    k.strip().lower()
-                    for k in jf.get("keywords", [])
-                    if isinstance(k, str) and k.strip()
-                )
-                service_ids = tuple(int(x) for x in jf.get("service_ids", []) if str(x).strip().isdigit())
-                customer_ids = tuple(int(x) for x in jf.get("customer_ids", []) if str(x).strip().isdigit())
-                esc_filter = EscalationFilter(keywords=keywords, service_ids=service_ids, customer_ids=customer_ids)
-        except Exception as e:
-            logger.error("ESCALATION_FILTER parse error: %s", e)
-
-    esc_manager: Optional[EscalationManager] = None
-    if esc_enabled:
-        esc_manager = EscalationManager(
-            store=state_store,
-            store_key="bot:escalation",
-            after_s=esc_after_s,
-            service_id_field=esc_service_id_field,
-            customer_id_field=esc_customer_id_field,
-            flt=esc_filter,
-        )
+        updated = runtime_config.apply_from_web_config(res.data)
+        if updated:
+            logger.info(
+                "config updated: version=%s source=%s",
+                runtime_config.version,
+                runtime_config.source,
+            )
 
     bot = Bot(token=token)
     dp = Dispatcher()
@@ -614,8 +622,11 @@ async def main() -> None:
     dp.workflow_data["web_client"] = web_client
     dp.workflow_data["web_guard"] = web_guard
     dp.workflow_data["sd_web_client"] = sd_web_client
+    dp.workflow_data["config_client"] = config_client
     dp.workflow_data["polling_state"] = polling_state
     dp.workflow_data["state_store"] = state_store
+    dp.workflow_data["runtime_config"] = runtime_config
+    dp.workflow_data["refresh_runtime_config"] = refresh_runtime_config
 
     dp.errors.register(on_error)
 
@@ -631,12 +642,13 @@ async def main() -> None:
     dp.message.register(cmd_escalation_send_test, Command("escalation_send_test"))
 
     async def notify_main(items: list[dict], text: str) -> None:
+        await refresh_runtime_config()
         dests = pick_destinations(
             items=items,
-            rules=rules,
-            default_dest=default_dest,
-            service_id_field=service_id_field,
-            customer_id_field=customer_id_field,
+            rules=runtime_config.routing.rules,
+            default_dest=runtime_config.routing.default_dest,
+            service_id_field=runtime_config.routing.service_id_field,
+            customer_id_field=runtime_config.routing.customer_id_field,
         )
         if not dests:
             logging.getLogger("bot.notify").info("No destinations configured for main notify, skip.")
@@ -645,15 +657,19 @@ async def main() -> None:
             await bot.send_message(chat_id=d.chat_id, message_thread_id=d.thread_id, text=text)
 
     async def notify_escalation(items: list[dict], _marker: str) -> None:
-        if not esc_enabled or esc_dest is None:
+        await refresh_runtime_config()
+        if not runtime_config.escalation.enabled or runtime_config.escalation.dest is None:
             return
-        text = _build_escalation_text(items, mention=esc_mention)
-        await bot.send_message(chat_id=esc_dest.chat_id, message_thread_id=esc_dest.thread_id, text=text)
+        text = _build_escalation_text(items, mention=runtime_config.escalation.mention)
+        d = runtime_config.escalation.dest
+        await bot.send_message(chat_id=d.chat_id, message_thread_id=d.thread_id, text=text)
 
     def get_escalations(items: list[dict]) -> list[dict]:
-        if esc_manager is None:
+        # refresh делаем в notify_* (и polling_loop вызывает get_escalations
+        # сразу после получения items), поэтому здесь sync.
+        if not runtime_config.escalation.enabled:
             return []
-        return esc_manager.process(items)
+        return runtime_config.get_escalations(items)
 
     polling_task = asyncio.create_task(
         polling_open_queue_loop(
@@ -661,8 +677,8 @@ async def main() -> None:
             stop_event=stop_event,
             sd_web_client=sd_web_client,
             notify_main=notify_main,
-            notify_escalation=notify_escalation if esc_enabled else None,
-            get_escalations=get_escalations if esc_enabled else None,
+            notify_escalation=notify_escalation,
+            get_escalations=get_escalations,
             base_interval_s=poll_interval_s,
             max_backoff_s=poll_max_backoff_s,
             min_notify_interval_s=min_notify_interval_s,
@@ -673,7 +689,16 @@ async def main() -> None:
         name="polling_open_queue",
     )
 
-    logger.info("Bot started. WEB_BASE_URL=%s POLL_INTERVAL_S=%s", web_base_url, poll_interval_s)
+    # Пытаемся сразу подтянуть конфиг при старте (не обязательно, но удобно для диагностики)
+    await refresh_runtime_config(force=True)
+
+    logger.info(
+        "Bot started. WEB_BASE_URL=%s CONFIG_URL=%s CONFIG_VERSION=%s POLL_INTERVAL_S=%s",
+        web_base_url,
+        config_url,
+        runtime_config.version,
+        poll_interval_s,
+    )
 
     try:
         await dp.start_polling(bot)
