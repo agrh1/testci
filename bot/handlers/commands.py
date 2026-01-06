@@ -10,7 +10,7 @@ import contextlib
 import time
 from typing import Optional
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
@@ -44,7 +44,7 @@ def register_handlers(dp: Dispatcher) -> None:
     user_router.message.register(cmd_help, Command("help"))
     user_router.message.register(cmd_ping, Command("ping"))
     user_router.message.register(cmd_share_phone, Command("share_phone"))
-    user_router.message.register(cmd_save_contact, lambda m: m.contact is not None)
+    user_router.message.register(cmd_save_contact, F.contact)
 
     admin_router.message.register(cmd_status, Command("status"))
     admin_router.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
@@ -540,10 +540,26 @@ async def cmd_escalation_send_test(
         )
 
 
-async def cmd_share_phone(message: Message) -> None:
+async def cmd_share_phone(message: Message, user_store: UserStore) -> None:
     """
     Просит пользователя отправить контакт (номер телефона).
     """
+    # Если номер передали аргументом — сохраняем сразу.
+    phone_arg = _parse_phone_arg(message)
+    if phone_arg:
+        if message.from_user is None:
+            return
+        profile = _profile_from_message(message)
+        profile = TgProfile(
+            telegram_id=profile.telegram_id,
+            username=profile.username,
+            full_name=profile.full_name,
+            phone=phone_arg,
+        )
+        await user_store.update_profile(profile)
+        await message.answer("✅ Телефон сохранён.", reply_markup=ReplyKeyboardRemove())
+        return
+
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 Отправить телефон", request_contact=True)]],
         resize_keyboard=True,
@@ -824,3 +840,16 @@ def _profile_from_message(message: Message) -> TgProfile:
         full_name=full_name,
         phone=phone,
     )
+
+
+def _parse_phone_arg(message: Message) -> Optional[str]:
+    """
+    Парсит номер телефона из аргумента /share_phone 79990001122.
+    """
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return None
+    phone = parts[1].strip()
+    if not phone:
+        return None
+    return phone
