@@ -56,6 +56,12 @@ def _fmt_state_message(*, normalized_items: list[dict[str, object]], max_items_i
     lines = [f"📌 Открытые заявки ({len(normalized_items)}) — {now_s}"]
     for t in shown:
         lines.append(f"- #{t['Id']}: {t['Name']}")
+        creator = t.get("Creator")
+        if isinstance(creator, str) and creator.strip():
+            lines.append(f"  от: {creator}")
+        url = t.get("Url")
+        if isinstance(url, str) and url.strip():
+            lines.append(f"  ссылка: {url}")
 
     rest = len(normalized_items) - len(shown)
     if rest > 0:

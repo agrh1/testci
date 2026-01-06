@@ -10,13 +10,15 @@ def normalize_tasks_for_message(items: list[dict[str, Any]]) -> list[dict[str, A
     """
     Нормализация для отображения пользователю:
     - сортируем по Id
-    - берём Id и Name (Name актуальный, как пришёл из API)
+    - берём Id, Name, Creator (строка) и ссылку на заявку
     """
     return sorted(
         (
             {
                 "Id": int(t.get("Id", 0)),
                 "Name": str(t.get("Name", "")),
+                "Creator": str(t.get("Creator", "")),
+                "Url": f"https://support.pixel.org.ru/task/view/{int(t.get('Id', 0))}",
             }
             for t in items
             if int(t.get("Id", 0)) > 0
