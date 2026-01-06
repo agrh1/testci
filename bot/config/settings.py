@@ -39,6 +39,22 @@ def get_env_int(name: str, default: str) -> int:
     return int(os.getenv(name, default))
 
 
+def parse_int_list(raw: str) -> list[int]:
+    """
+    Парсит список int из строки вида "1,2, 3".
+    """
+    out: list[int] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except Exception:
+            continue
+    return out
+
+
 @dataclass(frozen=True)
 class BotSettings:
     """
@@ -54,6 +70,9 @@ class BotSettings:
     config_token: str
     config_ttl_s: float
     config_timeout_s: float
+    database_url: str
+    tg_admins: tuple[int, ...]
+    tg_users: tuple[int, ...]
     redis_url: str
     redis_socket_timeout_s: float
     redis_connect_timeout_s: float
@@ -83,6 +102,11 @@ class BotSettings:
         config_ttl_s = get_env_float("CONFIG_TTL_S", "60")
         config_timeout_s = get_env_float("CONFIG_TIMEOUT_S", "2.5")
 
+        database_url = get_env("DATABASE_URL", "").strip()
+
+        tg_admins = tuple(parse_int_list(get_env("TG_ADMINS", "")))
+        tg_users = tuple(parse_int_list(get_env("TG_USERS", "")))
+
         redis_url = get_env("REDIS_URL", "").strip()
         redis_socket_timeout_s = get_env_float("REDIS_SOCKET_TIMEOUT_S", "1.0")
         redis_connect_timeout_s = get_env_float("REDIS_CONNECT_TIMEOUT_S", "1.0")
@@ -103,6 +127,9 @@ class BotSettings:
             config_token=config_token,
             config_ttl_s=config_ttl_s,
             config_timeout_s=config_timeout_s,
+            database_url=database_url,
+            tg_admins=tg_admins,
+            tg_users=tg_users,
             redis_url=redis_url,
             redis_socket_timeout_s=redis_socket_timeout_s,
             redis_connect_timeout_s=redis_connect_timeout_s,

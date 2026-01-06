@@ -4,7 +4,7 @@
 # Пути на сервере:
 # - prod:    /opt/testci/.envs/.env.prod
 # - staging: /opt/testci/.envs/.env.staging
-# - local:   ./\.envs/.env.local (в репозитории)
+# - local:   ./.envs/.env.local (в репозитории)
 #
 # Примечание:
 # - Этот файл — пример. Его не подключаем напрямую, а копируем/заполняем.
@@ -18,6 +18,13 @@ ENVIRONMENT=prod
 GIT_SHA=unknown
 LOG_LEVEL=INFO
 TZ=Europe/Moscow
+
+# -----------------------------
+# Telegram доступ
+# -----------------------------
+# Списки id через запятую
+TG_ADMINS=123456789,987654321
+TG_USERS=111222333,444555666
 
 # -----------------------------
 # Web сервис
@@ -96,7 +103,7 @@ ESCALATION_CUSTOMER_ID_FIELD=CustomerId
 ESCALATION_FILTER={}
 
 # -----------------------------
-# Admin alerts
+# Admin alerts (27A)
 # -----------------------------
 ADMIN_ALERT_CHAT_ID=
 ADMIN_ALERT_THREAD_ID=

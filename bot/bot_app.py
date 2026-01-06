@@ -20,6 +20,7 @@ from bot.config.settings import BotSettings
 from bot.handlers import commands, errors
 from bot.services.config_sync import ConfigSyncService
 from bot.services.notifications import NotificationService
+from bot.services.user_store import UserStore
 from bot.utils.config_client import ConfigClient
 from bot.utils.polling import PollingState, polling_open_queue_loop
 from bot.utils.runtime_config import RuntimeConfig
@@ -83,6 +84,13 @@ async def main() -> None:
     polling_state = PollingState()
     stop_event = asyncio.Event()
 
+    if not settings.database_url:
+        raise RuntimeError("DATABASE_URL is required for bot user storage")
+
+    user_store = UserStore(settings.database_url)
+    await user_store.init_schema()
+    await user_store.init_from_env(admins=settings.tg_admins, users=settings.tg_users)
+
     runtime_config = RuntimeConfig(logger=logger, store=state_store, escalation_store_key="bot:escalation")
     config_sync = ConfigSyncService(config_client, runtime_config, logger)
 
@@ -98,6 +106,7 @@ async def main() -> None:
     dp.workflow_data["polling_state"] = polling_state
     dp.workflow_data["state_store"] = state_store
     dp.workflow_data["runtime_config"] = runtime_config
+    dp.workflow_data["user_store"] = user_store
 
     dp.errors.register(errors.on_error)
     commands.register_handlers(dp)
@@ -158,4 +167,3 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, asyncio.CancelledError):
         # Нормально: процесс завершился по сигналу или отмене.
         pass
-

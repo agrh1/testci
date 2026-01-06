@@ -1,10 +1,7 @@
 """
 Командные обработчики бота.
 
-Содержит:
-- /start, /ping, /status, /sd_open
-- /routes_test, /routes_debug, /routes_send_test
-- /escalation_send_test
+Содержит пользовательские и админские команды.
 """
 
 from __future__ import annotations
@@ -13,13 +10,15 @@ import contextlib
 import time
 from typing import Optional
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from bot import ping_reply_text
 from bot.config.settings import get_env
+from bot.middlewares.access_control import AccessControlMiddleware, AccessPolicy
 from bot.services.config_sync import ConfigSyncService
+from bot.services.user_store import TgProfile, UserStore
 from bot.utils.escalation import EscalationFilter
 from bot.utils.notify_router import explain_matches, pick_destinations
 from bot.utils.polling import PollingState
@@ -34,16 +33,35 @@ def register_handlers(dp: Dispatcher) -> None:
     """
     Регистрирует все командные хендлеры в Dispatcher.
     """
-    dp.message.register(cmd_start, Command("start"))
-    dp.message.register(cmd_ping, Command("ping"))
-    dp.message.register(cmd_status, Command("status"))
-    dp.message.register(cmd_sd_open, Command("sd_open"))
-    dp.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
+    admin_router = Router()
+    user_router = Router()
 
-    dp.message.register(cmd_routes_test, Command("routes_test"))
-    dp.message.register(cmd_routes_debug, Command("routes_debug"))
-    dp.message.register(cmd_routes_send_test, Command("routes_send_test"))
-    dp.message.register(cmd_escalation_send_test, Command("escalation_send_test"))
+    # Middleware доступа: admin — только админские команды, user — user+admin.
+    admin_router.message.middleware(AccessControlMiddleware(policy=AccessPolicy(required_role="admin")))
+    user_router.message.middleware(AccessControlMiddleware(policy=AccessPolicy(required_role="user")))
+
+    user_router.message.register(cmd_start, Command("start"))
+    user_router.message.register(cmd_help, Command("help"))
+    user_router.message.register(cmd_ping, Command("ping"))
+    user_router.message.register(cmd_share_phone, Command("share_phone"))
+
+    admin_router.message.register(cmd_status, Command("status"))
+    admin_router.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
+
+    user_router.message.register(cmd_sd_open, Command("sd_open"))
+
+    admin_router.message.register(cmd_routes_test, Command("routes_test"))
+    admin_router.message.register(cmd_routes_debug, Command("routes_debug"))
+    admin_router.message.register(cmd_routes_send_test, Command("routes_send_test"))
+    admin_router.message.register(cmd_escalation_send_test, Command("escalation_send_test"))
+    admin_router.message.register(cmd_user_add, Command("user_add"))
+    admin_router.message.register(cmd_user_remove, Command("user_remove"))
+    admin_router.message.register(cmd_admin_add, Command("admin_add"))
+    admin_router.message.register(cmd_user_list, Command("user_list"))
+    admin_router.message.register(cmd_help_admin, Command("help_admin"))
+
+    dp.include_router(user_router)
+    dp.include_router(admin_router)
 
 
 def _fmt_ts(ts: Optional[float]) -> str:
@@ -150,12 +168,47 @@ def _match_escalation_filter(item: dict, flt: EscalationFilter, service_id_field
 
 async def cmd_start(message: Message) -> None:
     await message.answer(
-        "Команды: /ping /status /needs_web /sd_open /routes_test /routes_debug /routes_send_test /escalation_send_test"
+        "Доступные команды:\n"
+        "- /ping\n"
+        "- /help\n"
+        "- /share_phone (передать телефон для профиля)\n"
+        "- /sd_open — показать открытые заявки"
     )
 
 
 async def cmd_ping(message: Message) -> None:
     await message.answer(ping_reply_text())
+
+
+async def cmd_help(message: Message) -> None:
+    """
+    Справка для пользователей (без админских команд).
+    """
+    await message.answer(
+        "Справка по командам:\n"
+        "- /ping — проверка бота\n"
+        "- /share_phone — передать телефон для профиля\n"
+        "- /sd_open — показать открытые заявки"
+    )
+
+
+async def cmd_help_admin(message: Message) -> None:
+    """
+    Справка для админов.
+    """
+    await message.answer(
+        "Админские команды:\n"
+        "- /status\n"
+        "- /needs_web\n"
+        "- /routes_test\n"
+        "- /routes_debug\n"
+        "- /routes_send_test\n"
+        "- /escalation_send_test\n"
+        "- /user_add <id>\n"
+        "- /user_remove <id>\n"
+        "- /admin_add <id>\n"
+        "- /user_list [admins|users]"
+    )
 
 
 async def cmd_status(
@@ -472,3 +525,171 @@ async def cmd_escalation_send_test(
             f"- dest chat_id={esc.dest.chat_id}, thread_id={esc.dest.thread_id if esc.dest.thread_id is not None else '—'}\n"
             f"- error: {e}"
         )
+
+
+async def cmd_share_phone(message: Message) -> None:
+    """
+    Просит пользователя отправить контакт (номер телефона).
+    """
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Отправить телефон", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await message.answer(
+        "Нажмите кнопку ниже, чтобы отправить номер телефона. "
+        "Он будет сохранён в вашем профиле.",
+        reply_markup=kb,
+    )
+
+
+async def cmd_user_add(message: Message, user_store: UserStore) -> None:
+    """
+    /user_add <telegram_id>
+
+    Добавляет пользователя с ролью user.
+    Можно использовать ответ на сообщение — тогда id возьмём из reply.
+    """
+    target_id = _parse_target_id(message)
+    if target_id is None:
+        await message.answer("Формат: /user_add <telegram_id> (или ответ на сообщение пользователя)")
+        return
+
+    await user_store.upsert_role(
+        telegram_id=target_id,
+        role="user",
+        added_by=message.from_user.id if message.from_user else None,
+    )
+    await _maybe_update_profile_from_reply(message, user_store)
+    await message.answer(f"✅ Пользователь добавлен: {target_id}")
+
+
+async def cmd_user_remove(message: Message, user_store: UserStore) -> None:
+    """
+    /user_remove <telegram_id>
+
+    Снимает права пользователя (удаляет запись).
+    """
+    target_id = _parse_target_id(message)
+    if target_id is None:
+        await message.answer("Формат: /user_remove <telegram_id> (или ответ на сообщение пользователя)")
+        return
+
+    await user_store.delete_user(target_id)
+    await message.answer(f"✅ Пользователь удалён: {target_id}")
+
+
+async def cmd_admin_add(message: Message, user_store: UserStore) -> None:
+    """
+    /admin_add <telegram_id>
+
+    Добавляет пользователя с ролью admin.
+    """
+    target_id = _parse_target_id(message)
+    if target_id is None:
+        await message.answer("Формат: /admin_add <telegram_id> (или ответ на сообщение пользователя)")
+        return
+
+    await user_store.upsert_role(
+        telegram_id=target_id,
+        role="admin",
+        added_by=message.from_user.id if message.from_user else None,
+    )
+    await _maybe_update_profile_from_reply(message, user_store)
+    await message.answer(f"✅ Админ добавлен: {target_id}")
+
+
+async def cmd_user_list(message: Message, user_store: UserStore) -> None:
+    """
+    /user_list
+
+    Показывает список пользователей и админов.
+    """
+    role_filter = _parse_role_filter(message)
+    items = await user_store.list_users(limit=200)
+    if not items:
+        await message.answer("Список пользователей пуст.", reply_markup=ReplyKeyboardRemove())
+        return
+
+    if role_filter:
+        items = [it for it in items if it.get("role") == role_filter]
+
+    title = "Админы" if role_filter == "admin" else "Пользователи"
+    if role_filter is None:
+        title = "Пользователи и админы"
+
+    lines = [f"{title} (до 200):"]
+    for it in items:
+        role = it.get("role")
+        tid = it.get("telegram_id")
+        username = it.get("username") or ""
+        username_part = f"@{username}" if username else "—"
+        full_name = it.get("full_name") or "—"
+        phone = it.get("phone") or "—"
+        lines.append(f"- {role}: {tid} ({username_part}) {full_name} / {phone}")
+
+    await message.answer("\n".join(lines), reply_markup=ReplyKeyboardRemove())
+
+
+def _parse_target_id(message: Message) -> Optional[int]:
+    """
+    Берём id из аргумента команды или из reply.
+    """
+    if message.reply_to_message and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user.id
+
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1])
+    except Exception:
+        return None
+
+
+def _parse_role_filter(message: Message) -> Optional[str]:
+    """
+    Парсим фильтр для /user_list: admins|users.
+    """
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return None
+    arg = parts[1].strip().lower()
+    if arg in {"admin", "admins"}:
+        return "admin"
+    if arg in {"user", "users"}:
+        return "user"
+    return None
+
+
+async def _maybe_update_profile_from_reply(message: Message, user_store: UserStore) -> None:
+    """
+    Если команда выполнена в ответ на сообщение пользователя,
+    обновляем его профиль на основании reply.
+    """
+    if not message.reply_to_message:
+        return
+    reply_msg = message.reply_to_message
+    if not reply_msg.from_user:
+        return
+    profile = _profile_from_message(reply_msg)
+    await user_store.update_profile(profile)
+
+
+def _profile_from_message(message: Message) -> TgProfile:
+    """
+    Извлекает профиль пользователя из сообщения.
+    """
+    user = message.from_user
+    username = user.username or ""
+    full_name = " ".join([x for x in [user.first_name, user.last_name] if x]).strip()
+    phone = ""
+    if message.contact and message.contact.user_id == user.id:
+        phone = message.contact.phone_number or ""
+
+    return TgProfile(
+        telegram_id=user.id,
+        username=username,
+        full_name=full_name,
+        phone=phone,
+    )

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any
 
 
@@ -12,13 +13,14 @@ def normalize_tasks_for_message(items: list[dict[str, Any]]) -> list[dict[str, A
     - сортируем по Id
     - берём Id, Name, Creator (строка) и ссылку на заявку
     """
+    base_url = (os.getenv("SERVICEDESK_BASE_URL", "").strip() or "https://support.pixel.org.ru").rstrip("/")
     return sorted(
         (
             {
                 "Id": int(t.get("Id", 0)),
                 "Name": str(t.get("Name", "")),
                 "Creator": str(t.get("Creator", "")),
-                "Url": f"https://support.pixel.org.ru/task/view/{int(t.get('Id', 0))}",
+                "Url": f"{base_url}/task/view/{int(t.get('Id', 0))}",
             }
             for t in items
             if int(t.get("Id", 0)) > 0
