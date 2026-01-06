@@ -565,6 +565,13 @@ async def cmd_share_phone(message: Message, user_store: UserStore) -> None:
         await message.answer("✅ Телефон сохранён.", reply_markup=ReplyKeyboardRemove())
         return
 
+    if message.chat.type != "private":
+        await message.answer(
+            "⚠️ Отправка телефона доступна только в личном чате с ботом.\n"
+            "Напишите боту в личку и используйте /share_phone там."
+        )
+        return
+
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 Отправить телефон", request_contact=True)]],
         resize_keyboard=True,
@@ -685,6 +692,18 @@ async def cmd_user_list(message: Message, user_store: UserStore) -> None:
         title = "Пользователи и админы"
 
     lines = [f"{title} (до 200):"]
+    header = _format_user_row(
+        role="role",
+        telegram_id="id",
+        username="username",
+        full_name="name",
+        phone="phone",
+        last_info="last",
+        show_history=show_history,
+        is_header=True,
+    )
+    lines.append("```")
+    lines.append(header)
     for it in items:
         role = it.get("role")
         tid = it.get("telegram_id")
@@ -692,13 +711,25 @@ async def cmd_user_list(message: Message, user_store: UserStore) -> None:
         username_part = f"@{username}" if username else "—"
         full_name = it.get("full_name") or "—"
         phone = it.get("phone") or "—"
-        line = f"- {role}: {tid} ({username_part}) {full_name} / {phone}"
+        last_info = ""
         if show_history:
             last_cmd = it.get("last_command") or "—"
             last_at = it.get("last_command_at")
             last_at_s = last_at.strftime("%Y-%m-%d %H:%M:%S") if last_at else "—"
-            line += f" | last: {last_cmd} @ {last_at_s}"
-        lines.append(line)
+            last_info = f"{last_cmd} @ {last_at_s}"
+        lines.append(
+            _format_user_row(
+                role=str(role),
+                telegram_id=str(tid),
+                username=username_part,
+                full_name=full_name,
+                phone=phone,
+                last_info=last_info,
+                show_history=show_history,
+                is_header=False,
+            )
+        )
+    lines.append("```")
 
     await message.answer("\n".join(lines), reply_markup=ReplyKeyboardRemove())
 
@@ -783,6 +814,44 @@ def _parse_history_flag(message: Message) -> bool:
 def _parse_top10_flag(message: Message) -> bool:
     parts = (message.text or "").split()
     return any(p.strip().lower() == "top10" for p in parts[1:])
+
+
+def _format_user_row(
+    *,
+    role: str,
+    telegram_id: str,
+    username: str,
+    full_name: str,
+    phone: str,
+    last_info: str,
+    show_history: bool,
+    is_header: bool,
+) -> str:
+    """
+    Ровная строка таблицы для /user_list.
+    """
+    def _cut(s: str, n: int) -> str:
+        s = s.replace("\n", " ")
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    role_w = 6
+    id_w = 12
+    user_w = 20
+    name_w = 22
+    phone_w = 16
+    last_w = 28
+
+    role_s = _cut(role, role_w).ljust(role_w)
+    id_s = _cut(telegram_id, id_w).ljust(id_w)
+    user_s = _cut(username, user_w).ljust(user_w)
+    name_s = _cut(full_name, name_w).ljust(name_w)
+    phone_s = _cut(phone, phone_w).ljust(phone_w)
+
+    if show_history:
+        last_s = _cut(last_info or "—", last_w).ljust(last_w)
+        return f"{role_s} {id_s} {user_s} {name_s} {phone_s} {last_s}"
+
+    return f"{role_s} {id_s} {user_s} {name_s} {phone_s}"
 
 
 async def _render_top10(message: Message, user_store: UserStore) -> None:
