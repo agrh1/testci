@@ -53,6 +53,11 @@ class AccessControlMiddleware(BaseMiddleware):
         command = _extract_command(event)
         if command:
             await user_store.log_command(user.id, command)
+            await user_store.log_audit(
+                telegram_id=user.id,
+                action=f"CMD:{command}",
+                actor_id=user.id,
+            )
 
         if self._policy.required_role == "admin":
             if role != "admin":

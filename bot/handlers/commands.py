@@ -43,7 +43,7 @@ from bot.utils.runtime_config import RuntimeConfig
 from bot.utils.sd_api_client import SdApiClient
 from bot.utils.sd_state import normalize_tasks_for_message
 from bot.utils.sd_web_client import SdWebClient
-from bot.utils.seafile_client import getlink
+from bot.utils.seafile_client import get_download_link, getlink
 from bot.utils.state_store import StateStore
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
@@ -75,6 +75,7 @@ def register_handlers(dp: Dispatcher) -> None:
     user_router.message.register(cmd_save_contact, F.contact)
     user_router.message.register(cmd_reset_password, Command("reset_password"))
     user_router.message.register(cmd_get_link, Command("get_link"))
+    user_router.message.register(cmd_get_link_d, Command("get_link_d"))
     user_router.message.register(cmd_get_link_ticket, StateFilter(LinkRequest.waiting_for_ticket))
 
     admin_router.message.register(cmd_status, Command("status"))
@@ -331,7 +332,8 @@ async def cmd_start(message: Message, user_store: UserStore) -> None:
         "- /share_phone (передать телефон для профиля)\n"
         "- /sd_open — показать открытые заявки\n"
         "- /reset_password — сбросить пароль в SD\n"
-        "- /get_link — ссылка на загрузку логов"
+        "- /get_link — ссылка на загрузку логов\n"
+        "- /get_link_d — ссылка на скачивание логов"
     )
     if role == "admin":
         text += "\n\nАдминские команды:\n- /help_admin"
@@ -353,7 +355,8 @@ async def cmd_help(message: Message) -> None:
         "- /share_phone — передать телефон для профиля\n"
         "- /sd_open — показать открытые заявки\n"
         "- /reset_password — сбросить пароль в SD\n"
-        "- /get_link — ссылка на загрузку логов"
+        "- /get_link — ссылка на загрузку логов\n"
+        "- /get_link_d — ссылка на скачивание логов"
     )
 
 
@@ -990,7 +993,27 @@ async def cmd_get_link(message: Message, state: FSMContext, seafile_store: Seafi
         builder.row(InlineKeyboardButton(text=title, callback_data=f"gl:{svc.service_id}"))
 
     await state.set_state(LinkRequest.waiting_for_service)
+    await state.update_data(link_mode="upload")
     await message.answer("на какой ресурс нужно загрузить лог?", reply_markup=builder.as_markup())
+
+
+async def cmd_get_link_d(message: Message, state: FSMContext, seafile_store: SeafileServiceStore) -> None:
+    """
+    Запускает диалог получения ссылки на скачивание логов (Seafile).
+    """
+    services = await seafile_store.list_services(enabled_only=True)
+    if not services:
+        await message.answer("❌ Сервисы Seafile не настроены.")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for svc in services:
+        title = svc.name or svc.base_url
+        builder.row(InlineKeyboardButton(text=title, callback_data=f"gl:{svc.service_id}"))
+
+    await state.set_state(LinkRequest.waiting_for_service)
+    await state.update_data(link_mode="download")
+    await message.answer("на каком сервере нужна ссылка на скачивание?", reply_markup=builder.as_markup())
 
 
 async def cb_get_link_service(callback: CallbackQuery, state: FSMContext, user_store: UserStore) -> None:
@@ -1052,16 +1075,42 @@ async def cmd_get_link_ticket(
         await state.clear()
         return
 
-    try:
-        link = await asyncio.to_thread(getlink, ticket, service)
-    except Exception as e:
-        await message.answer(f"❌ Не удалось создать ссылку: {e}")
-        await state.clear()
-        return
-    if link == "err":
-        await message.answer("❌ Не удалось создать ссылку.")
+    mode = data.get("link_mode", "upload")
+    if mode == "download":
+        try:
+            result = await asyncio.to_thread(get_download_link, ticket, service)
+        except Exception as e:
+            await message.answer(f"❌ Не удалось создать ссылку: {e}")
+            await state.clear()
+            return
+        status = result.get("status") if isinstance(result, dict) else "err"
+        if status == "missing":
+            await message.answer(
+                "❌ Каталог не существует. Сначала создайте через /get_link."
+            )
+        elif status == "ok":
+            link = result.get("link")
+            password = result.get("password")
+            expire_days = result.get("expire_days", 7)
+            if link and password:
+                await message.answer(
+                    f"{ticket}\n{link}\nПароль: {password}\nСрок действия: {expire_days} дней"
+                )
+            else:
+                await message.answer("❌ Не удалось создать ссылку.")
+        else:
+            await message.answer("❌ Не удалось создать ссылку.")
     else:
-        await message.answer(link)
+        try:
+            link = await asyncio.to_thread(getlink, ticket, service)
+        except Exception as e:
+            await message.answer(f"❌ Не удалось создать ссылку: {e}")
+            await state.clear()
+            return
+        if link == "err":
+            await message.answer("❌ Не удалось создать ссылку.")
+        else:
+            await message.answer(link)
     await state.clear()
 
 

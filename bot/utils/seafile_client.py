@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+import secrets
+import string
 from typing import Optional
 
 import requests
@@ -12,6 +14,14 @@ import requests
 from bot.services.seafile_store import SeafileService
 
 logger = logging.getLogger(__name__)
+
+DOWNLOAD_EXPIRE_DAYS = 7
+DOWNLOAD_PASSWORD_LENGTH = 10
+_PASSWORD_ALPHABET = string.ascii_letters + string.digits
+
+
+def _generate_password(length: int = DOWNLOAD_PASSWORD_LENGTH) -> str:
+    return "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(length))
 
 
 def _get_auth_token(service: SeafileService) -> Optional[str]:
@@ -59,6 +69,30 @@ def _check_link(task_id: str, service: SeafileService, token: str) -> bool:
     return False
 
 
+def get_download_link(task_id: str, service: SeafileService) -> dict:
+    token = _get_auth_token(service)
+    if not token:
+        return {"status": "err"}
+
+    exists = _folder_exists(task_id, service, token)
+    if exists is None:
+        return {"status": "err"}
+    if not exists:
+        return {"status": "missing"}
+
+    password = _generate_password()
+    res = _make_download_link(task_id, service, token, password=password)
+    link = res.get("link")
+    if link:
+        return {
+            "status": "ok",
+            "link": str(link),
+            "password": password,
+            "expire_days": DOWNLOAD_EXPIRE_DAYS,
+        }
+    return {"status": "err"}
+
+
 def _make_link(task_id: str, service: SeafileService, token: str) -> dict:
     headers = {
         "Authorization": token,
@@ -75,6 +109,51 @@ def _make_link(task_id: str, service: SeafileService, token: str) -> dict:
     return res.json()
 
 
+def _make_download_link(
+    task_id: str,
+    service: SeafileService,
+    token: str,
+    *,
+    password: str,
+) -> dict:
+    headers = {
+        "Authorization": token,
+        "Accept": "application/json;charset=utf-8;indent=4",
+    }
+    path = "/" + task_id
+    data = {
+        "path": path,
+        "repo_id": service.repo_id,
+        "expire_days": str(DOWNLOAD_EXPIRE_DAYS),
+        "password": password,
+    }
+    res = requests.post(
+        f"{service.base_url.rstrip('/')}/api/v2.1/share-links/",
+        data=data,
+        headers=headers,
+        timeout=10,
+    )
+    return res.json()
+
+
+def _folder_exists(task_id: str, service: SeafileService, token: str) -> Optional[bool]:
+    headers = {
+        "Authorization": token,
+        "Accept": "application/json;charset=utf-8;indent=4",
+    }
+    res = requests.get(
+        f"{service.base_url.rstrip('/')}/api2/repos/{service.repo_id}/dir/?p=/{task_id}",
+        headers=headers,
+        timeout=10,
+    )
+    if res.status_code == 200:
+        return True
+    if res.status_code == 404:
+        return False
+    logger.warning("Seafile folder check unexpected status: %s", res.status_code)
+    return None
+
+
 def _make_folder(task_id: str, service: SeafileService, token: str):
     data = {"operation": "mkdir"}
     headers = {
@@ -88,4 +167,3 @@ def _make_folder(task_id: str, service: SeafileService, token: str):
         timeout=10,
     )
     return res.json()
-

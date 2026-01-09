@@ -197,7 +197,7 @@ Web хранит конфиг бота и историю версий в таб�
 
 Дополнительно:
 
-- `seafile_services` — список Seafile сервисов для /get_link (name/base_url/repo_id/auth_token/username/password/enabled).
+- `seafile_services` — список Seafile сервисов для /get_link и /get_link_d (name/base_url/repo_id/auth_token/username/password/enabled).
 - `eventlog_filters` — фильтры eventlog (enabled/match_type/field/pattern/hits).
 - `service_icons` — значки сервисов по ServiceId (service_code/service_name/icon/enabled).
 
