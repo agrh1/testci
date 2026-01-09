@@ -131,6 +131,10 @@ POLL_MAX_BACKOFF_S=300
 MIN_NOTIFY_INTERVAL_S=60
 # Максимум заявок в одном сообщении.
 MAX_ITEMS_IN_MESSAGE=10
+# Интервал проверки getlink_* (сек).
+GETLINK_POLL_INTERVAL_S=60
+# Окно поиска изменённых заявок (сек).
+GETLINK_LOOKBACK_S=120
 
 # -----------------------------
 # Routing (fallback через env)

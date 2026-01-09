@@ -20,6 +20,7 @@ Web отвечает за проксирование запросов к Service
 - Обработка eventlog ServiceDesk с отдельной веткой маршрутизации.
 - Хранение и версияция runtime‑конфига (/config).
 - Админ‑алерты при деградации web/redis или проблемах routing.
+- Автообработка заявок с категорией getlink_* (создание ссылок Seafile и скрытый комментарий).
 
 ## Быстрый старт (local)
 
@@ -98,6 +99,8 @@ curl -s http://localhost:8000/health
 - `POLL_MAX_BACKOFF_S` — максимальный backoff при ошибках.
 - `MIN_NOTIFY_INTERVAL_S` — минимальный интервал между уведомлениями.
 - `MAX_ITEMS_IN_MESSAGE` — максимум заявок в одном сообщении.
+- `GETLINK_POLL_INTERVAL_S` — интервал проверки заявок с getlink_*.
+- `GETLINK_LOOKBACK_S` — окно поиска изменённых заявок (секунды).
 
 ### Eventlog
 
@@ -197,7 +200,7 @@ Web хранит конфиг бота и историю версий в таб�
 
 Дополнительно:
 
-- `seafile_services` — список Seafile сервисов для /get_link и /get_link_d (name/base_url/repo_id/auth_token/username/password/enabled).
+- `seafile_services` — список Seafile сервисов для /get_link, /get_link_d и авто‑getlink (name/base_url/repo_id/auth_token/username/password/sd_category/enabled; sd_category в формате `id:name` или `id|name`).
 - `eventlog_filters` — фильтры eventlog (enabled/match_type/field/pattern/hits).
 - `service_icons` — значки сервисов по ServiceId (service_code/service_name/icon/enabled).
 
@@ -268,6 +271,7 @@ CREATE TABLE IF NOT EXISTS seafile_services (
   auth_token TEXT,
   username TEXT,
   password TEXT,
+  sd_category TEXT,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

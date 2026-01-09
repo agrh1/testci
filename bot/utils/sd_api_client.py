@@ -123,9 +123,74 @@ class SdApiClient:
         return False
 
 
+    def list_tasks_changed_since(
+        self,
+        changed_more_than: str,
+        *,
+        fields: str = "Id,CategoryIds,Categories",
+        category_ids: Optional[str] = None,
+        pagesize: int = 200,
+    ) -> list[dict[str, object]]:
+        url = f"{self._cfg.base_url.rstrip('/')}/api/task"
+        headers = self._basic_auth_header()
+        headers["Accept"] = "application/json"
+
+        page = 1
+        tasks: list[dict[str, object]] = []
+        while True:
+            params = {
+                "ChangedMoreThan": changed_more_than,
+                "fields": fields,
+                "page": str(page),
+                "pagesize": str(pagesize),
+            }
+            if category_ids:
+                params["CategoryIds"] = category_ids
+
+            response = requests.get(url, headers=headers, params=params, timeout=self._cfg.timeout_s)
+            if response.status_code >= 400:
+                raise RuntimeError(f"ServiceDesk error {response.status_code}: {response.text}")
+
+            data = response.json()
+            items = data.get("Tasks") or []
+            tasks.extend(items)
+
+            paginator = data.get("Paginator") or {}
+            page_count = int(paginator.get("PageCount", page))
+            if page >= page_count:
+                break
+            page += 1
+
+        return tasks
+
+    def update_task_categories_comment(
+        self,
+        task_id: int,
+        *,
+        category_ids: str,
+        comment: str,
+        is_private: bool = True,
+    ) -> dict[str, object]:
+        url = f"{self._cfg.base_url.rstrip('/')}/api/task/{task_id}"
+        headers = self._basic_auth_header()
+        headers["Content-Type"] = "application/json"
+
+        payload: dict[str, object] = {
+            "CategoryIds": category_ids,
+            "Comment": comment,
+            "IsPrivateComment": bool(is_private),
+        }
+
+        response = requests.put(url, headers=headers, data=json.dumps(payload), timeout=self._cfg.timeout_s)
+        if response.status_code >= 400:
+            raise RuntimeError(f"ServiceDesk error {response.status_code}: {response.text}")
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {"raw_response": response.text}
+
 def _generate_secure_password(length: int = 12) -> str:
     if length < 8:
         raise ValueError("Длина пароля должна быть не менее 8 символов")
     characters = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
     return "".join(random.choice(characters) for _ in range(length))
-

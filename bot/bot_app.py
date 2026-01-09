@@ -22,6 +22,7 @@ from bot.handlers import commands, errors
 from bot.services.config_sync import ConfigSyncService
 from bot.services.eventlog_filter_store import EventlogFilterStore
 from bot.services.eventlog_worker import eventlog_loop
+from bot.services.getlink_worker import getlink_poll_loop
 from bot.services.notifications import NotificationService
 from bot.services.observability import ObservabilityService
 from bot.services.seafile_store import SeafileServiceStore
@@ -207,6 +208,17 @@ async def main() -> None:
             name="eventlog_loop",
         )
 
+    getlink_task = asyncio.create_task(
+        getlink_poll_loop(
+            sd_api_client=sd_api_client,
+            seafile_store=seafile_store,
+            interval_s=settings.getlink_poll_interval_s,
+            lookback_s=settings.getlink_lookback_s,
+            stop_event=stop_event,
+        ),
+        name="getlink_poll",
+    )
+
     async def observability_loop() -> None:
         """
         Периодические проверки деградации и rollback.
@@ -241,6 +253,7 @@ async def main() -> None:
         observability_task.cancel()
         if eventlog_task is not None:
             eventlog_task.cancel()
+        getlink_task.cancel()
         try:
             await polling_task
         except asyncio.CancelledError:
@@ -255,6 +268,10 @@ async def main() -> None:
                 await eventlog_task
             except asyncio.CancelledError:
                 pass
+        try:
+            await getlink_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":

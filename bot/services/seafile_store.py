@@ -21,6 +21,7 @@ class SeafileService:
     auth_token: str
     username: str
     password: str
+    sd_category: str
     enabled: bool
 
 
@@ -52,12 +53,14 @@ class SeafileServiceStore:
                     auth_token TEXT,
                     username TEXT,
                     password TEXT,
+                    sd_category TEXT,
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """
             )
+            cur.execute("ALTER TABLE seafile_services ADD COLUMN IF NOT EXISTS sd_category TEXT")
 
     def _row_to_service(self, row) -> SeafileService:
         return SeafileService(
@@ -68,6 +71,7 @@ class SeafileServiceStore:
             auth_token=str(row["auth_token"] or ""),
             username=str(row["username"] or ""),
             password=str(row["password"] or ""),
+            sd_category=str(row["sd_category"] or ""),
             enabled=bool(row["enabled"]),
         )
 
@@ -76,7 +80,7 @@ class SeafileServiceStore:
             if enabled_only:
                 cur.execute(
                     """
-                    SELECT id, name, base_url, repo_id, auth_token, username, password, enabled
+                    SELECT id, name, base_url, repo_id, auth_token, username, password, sd_category, enabled
                     FROM seafile_services
                     WHERE enabled = TRUE
                     ORDER BY id ASC
@@ -85,7 +89,7 @@ class SeafileServiceStore:
             else:
                 cur.execute(
                     """
-                    SELECT id, name, base_url, repo_id, auth_token, username, password, enabled
+                    SELECT id, name, base_url, repo_id, auth_token, username, password, sd_category, enabled
                     FROM seafile_services
                     ORDER BY id ASC
                     """
@@ -97,7 +101,7 @@ class SeafileServiceStore:
         with self._connect() as conn, conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, name, base_url, repo_id, auth_token, username, password, enabled
+                SELECT id, name, base_url, repo_id, auth_token, username, password, sd_category, enabled
                 FROM seafile_services
                 WHERE id = %s
                 """,
@@ -107,4 +111,3 @@ class SeafileServiceStore:
             if row is None:
                 return None
             return self._row_to_service(row)
-

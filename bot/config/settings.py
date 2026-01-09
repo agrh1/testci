@@ -109,6 +109,8 @@ class BotSettings:
     eventlog_keepalive_every: int
     eventlog_start_id: int
     eventlog_enabled: bool
+    getlink_poll_interval_s: int
+    getlink_lookback_s: int
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -165,6 +167,8 @@ class BotSettings:
         eventlog_keepalive_every = get_env_int("EVENTLOG_KEEPALIVE_EVERY", "48")
         eventlog_start_id = get_env_int("EVENTLOG_START_ID", "0")
         eventlog_enabled = get_env("EVENTLOG_ENABLED", "1").strip().lower() in ("1", "true", "yes")
+        getlink_poll_interval_s = get_env_int("GETLINK_POLL_INTERVAL_S", "60")
+        getlink_lookback_s = get_env_int("GETLINK_LOOKBACK_S", "120")
 
         return cls(
             token=token,
@@ -204,4 +208,6 @@ class BotSettings:
             eventlog_keepalive_every=eventlog_keepalive_every,
             eventlog_start_id=eventlog_start_id,
             eventlog_enabled=eventlog_enabled,
+            getlink_poll_interval_s=getlink_poll_interval_s,
+            getlink_lookback_s=getlink_lookback_s,
         )
