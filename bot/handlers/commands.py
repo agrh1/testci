@@ -95,6 +95,7 @@ def register_handlers(dp: Dispatcher) -> None:
     admin_router.message.register(cmd_user_audit, Command("user_audit"))
     admin_router.message.register(cmd_share_contact, Command("share_contact"))
     admin_router.message.register(cmd_share_contact_phone, _is_pending_share_contact)
+    admin_router.message.register(cmd_config, Command("config"))
     admin_router.message.register(cmd_config_diff, Command("config_diff"))
     admin_router.message.register(cmd_last_eventlog_id, Command("last_eventlog_id"))
     admin_router.message.register(cmd_eventlog_poll, Command("eventlog_poll"))
@@ -164,6 +165,70 @@ def _parse_kv_args(text: str) -> dict[str, str]:
             if end != -1:
                 out["name"] = text[start:end]
     return out
+
+
+def _parse_command_arg(text: str) -> str:
+    parts = (text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
+
+
+def _strip_code_fence(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].strip().startswith("```"):
+            return "\n".join(lines[1:-1]).strip()
+    return raw
+
+
+def _split_text(text: str, limit: int) -> list[str]:
+    return [text[i : i + limit] for i in range(0, len(text), limit)] or [""]
+
+
+async def _send_json_message(message: Message, payload: dict, *, title: str) -> None:
+    raw = json.dumps(payload, ensure_ascii=False, indent=2)
+    chunks = _split_text(raw, 3400)
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
+        prefix = f"{title} ({i}/{total})\n" if total > 1 else f"{title}\n"
+        await message.answer(f"{prefix}```json\n{chunk}\n```")
+
+
+def _config_help_text() -> str:
+    return (
+        "Формат /config:\n"
+        "1) /config — показать текущий конфиг\n"
+        "2) /config ? — справка\n"
+        "3) /config <json> — обновить конфиг\n"
+        "\n"
+        "Обновление полностью заменяет конфиг.\n"
+        "Чтобы поменять одно поле — сначала /config, потом редактируйте JSON.\n"
+        "Обязательные поля верхнего уровня: routing, escalation.\n"
+        "eventlog можно опустить (будет наследовать routing).\n"
+        "Поля version и source можно оставить — бот их вырежет.\n"
+        "\n"
+        "routing:\n"
+        "- rules: список правил (можно [])\n"
+        "- default_dest: {chat_id, thread_id} (можно опустить)\n"
+        "- service_id_field, customer_id_field (опционально)\n"
+        "\n"
+        "escalation:\n"
+        "- enabled: true/false\n"
+        "- если enabled=true: after_s (int), dest {chat_id, thread_id}\n"
+        "- mention, service_id_field, customer_id_field (опционально)\n"
+        "- filter: {keywords:[], service_ids:[], customer_ids:[]} (опционально)\n"
+        "\n"
+        "eventlog:\n"
+        "- rules, default_dest, service_id_field, customer_id_field (всё опционально)\n"
+        "\n"
+        "Минимальный пример:\n"
+        "{\n"
+        '  "routing": {"rules": [], "default_dest": {"chat_id": 123456789}},\n'
+        '  "escalation": {"enabled": false}\n'
+        "}"
+    )
 
 
 def _build_fake_item(
@@ -276,6 +341,7 @@ async def cmd_help_admin(message: Message) -> None:
         "- /user_history <id> [limit]\n"
         "- /user_audit <id> [limit]\n"
         "- /share_contact <id> <phone>\n"
+        "- /config [ ? | <json> ]\n"
         "- /config_diff <from> <to>\n"
         "- /last_eventlog_id [set <id>]\n"
         "- /eventlog_poll\n"
@@ -360,6 +426,68 @@ async def cmd_status(
 
 async def cmd_needs_web(message: Message) -> None:
     await message.answer("web готов ✅")
+
+
+async def cmd_config(
+    message: Message,
+    web_client: WebClient,
+    config_sync: ConfigSyncService,
+    runtime_config: RuntimeConfig,
+    config_admin_token: str,
+) -> None:
+    arg = _parse_command_arg(message.text or "")
+    if arg in {"?", "help", "/?", "-h", "--help"} or arg.startswith("?"):
+        await message.answer(_config_help_text())
+        return
+
+    if not arg:
+        token = get_env("CONFIG_TOKEN", "").strip()
+        res = await web_client.get_config(token=token)
+        if not res.get("ok"):
+            err = res.get("error") or "unknown"
+            status = res.get("status")
+            detail = f" (status={status})" if status else ""
+            await message.answer(f"❌ /config: не удалось получить конфиг{detail}\nПричина: {err}")
+            return
+
+        payload = res.get("data")
+        if not isinstance(payload, dict):
+            await message.answer("❌ /config: неожиданный формат ответа")
+            return
+        await _send_json_message(message, payload, title="CONFIG")
+        return
+
+    if not config_admin_token:
+        await message.answer("❌ CONFIG_ADMIN_TOKEN не задан")
+        return
+
+    raw = _strip_code_fence(arg)
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        await message.answer(f"❌ JSON parse error: {e}")
+        return
+
+    if not isinstance(data, dict):
+        await message.answer("❌ JSON должен быть объектом ({}).")
+        return
+
+    data.pop("version", None)
+    data.pop("source", None)
+
+    res = await web_client.put_config(data=data, admin_token=config_admin_token)
+    if not res.get("ok"):
+        err = res.get("error") or "unknown"
+        status = res.get("status")
+        detail = f" (status={status})" if status else ""
+        await message.answer(f"❌ /config: не удалось обновить конфиг{detail}\nПричина: {err}")
+        return
+
+    await config_sync.refresh(force=True)
+    await message.answer(
+        "✅ Конфиг обновлён.\n"
+        f"- config: v{runtime_config.version} ({runtime_config.source})"
+    )
 
 
 async def cmd_sd_open(message: Message, sd_web_client: SdWebClient, service_icon_store: ServiceIconStore) -> None:

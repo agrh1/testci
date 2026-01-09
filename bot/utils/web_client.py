@@ -112,3 +112,37 @@ class WebClient:
                     return {"ok": True, "data": data}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    async def get_config(self, *, token: str = "") -> dict[str, object]:
+        """
+        Возвращает текущий /config (read-only).
+        """
+        url = f"{self.base_url}/config"
+        timeout = aiohttp.ClientTimeout(total=self.timeout_s)
+        headers = {"X-Config-Token": token} if token else {}
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as r:
+                    data = await r.json()
+                    if r.status >= 400:
+                        return {"ok": False, "status": r.status, "error": data.get("error") or str(data)}
+                    return {"ok": True, "status": r.status, "data": data}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    async def put_config(self, *, data: dict[str, object], admin_token: str) -> dict[str, object]:
+        """
+        Обновляет /config (admin only).
+        """
+        url = f"{self.base_url}/config"
+        timeout = aiohttp.ClientTimeout(total=self.timeout_s)
+        headers = {"X-Admin-Token": admin_token} if admin_token else {}
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.put(url, json=data, headers=headers) as r:
+                    payload = await r.json()
+                    if r.status >= 400:
+                        return {"ok": False, "status": r.status, "error": payload.get("error") or str(payload)}
+                    return {"ok": True, "status": r.status, "data": payload}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
