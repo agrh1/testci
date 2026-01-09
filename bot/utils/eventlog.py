@@ -10,13 +10,14 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot.eventlog")
 
 
 def get_item(event_id: int, login: str, password: str, base_url: str) -> Optional[str]:
     """
     Подключаемся к странице сообщения, и если такая страница есть - возвращаем её.
     """
+    logger.debug("eventlog get_item start: event_id=%s base_url=%s", event_id, base_url)
     with requests.Session() as session:
         payload = {"login": login, "password": password}
         headers = {
@@ -27,7 +28,9 @@ def get_item(event_id: int, login: str, password: str, base_url: str) -> Optiona
         }
         rs = session.post(f"{base_url.rstrip('/')}/registertask.ivp", headers=headers, data=payload)
         r = session.get(f"{base_url.rstrip('/')}/eventlog.ivp/view/{event_id}", cookies=rs.cookies)
+        logger.debug("eventlog get_item response: event_id=%s status=%s", event_id, r.status_code)
         if r.status_code == 200:
+            logger.debug("eventlog get_item ok: event_id=%s size=%s", event_id, len(r.text))
             return r.text
         return None
 
@@ -43,17 +46,20 @@ def get_last_item(login: str, password: str, base_url: str) -> Optional[str]:
         }
         rs = session.post(f"{base_url.rstrip('/')}/registertask.ivp", headers=headers, data=payload)
         r = session.get(f"{base_url.rstrip('/')}/eventlog.ivp/list", cookies=rs.cookies)
+        logger.debug("eventlog get_last_item response: status=%s", r.status_code)
         if r.status_code != 200:
             return None
         text = r.text.split()
         for line in text:
             if "eventlog.ivp/view/" in line:
-                return line[24:29]
+                last_item = line[24:29]
+                logger.debug("eventlog get_last_item found: %s", last_item)
+                return last_item
         return None
 
 
 def parse_event(text: str) -> dict[str, str]:
-    logger.info("***** start parsing *****")
+    logger.debug("eventlog parse_event start")
     event_info: dict[str, str] = {}
     soup = BeautifulSoup(text, "html.parser")
     event_body = soup.find("div", {"class": "formbody"})
@@ -69,8 +75,7 @@ def parse_event(text: str) -> dict[str, str]:
             key = field.find("label", {"for": "description"}).text.strip()
         event_field = field.contents[2].strip()
         event_info[key] = event_field
-    logger.info(event_info)
-    logger.info("***** end parsing *****")
+    logger.debug("eventlog parse_event done: keys=%s", list(event_info.keys()))
     return event_info
 
 
@@ -94,4 +99,3 @@ def message_important_checker(msg: dict[str, str]) -> bool:
     if "Письмо отправлено слишком давно" in msg.get("Описание", ""):
         return False
     return True
-
