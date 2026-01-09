@@ -43,10 +43,15 @@ def _parse_sd_category(raw: str) -> tuple[Optional[str], Optional[str]]:
     value = (raw or "").strip()
     if not value:
         return None, None
-    # Supported formats: "110:getlink_ml" or "110|getlink_ml"
-    m = re.match(r"^\\s*(\\d+)\\s*[:|]\\s*(.+?)\\s*$", value)
+    # Supported formats: "110:getlink_ml", "110|getlink_ml", "110 getlink_ml".
+    m = re.match(r"^\\s*(\\d+)\\s*(.*)$", value)
     if m:
-        return m.group(1), m.group(2)
+        cat_id = m.group(1)
+        rest = (m.group(2) or "").strip()
+        if rest:
+            rest = re.sub(r"^[^A-Za-z0-9]+", "", rest)
+            return cat_id, rest or None
+        return cat_id, None
     if value.isdigit():
         return value, None
     return None, value
