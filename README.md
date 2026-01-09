@@ -200,6 +200,81 @@ Web хранит конфиг бота и историю версий в таб�
 - `seafile_services` — список Seafile сервисов для /get_link (name/base_url/repo_id/auth_token/username/password/enabled).
 - `eventlog_filters` — фильтры eventlog (enabled/match_type/field/pattern/hits).
 
+### Бэкапы и перенос между БД
+
+Ниже примеры для Postgres в контейнере (docker compose).
+
+Полный бэкап БД:
+
+```bash
+docker compose -f prod/docker-compose.prod.yml exec -T postgres \
+  pg_dump -U testci -d testci > /tmp/prod_full_dump.sql
+```
+
+Полный restore (осторожно, перезапишет данные):
+
+```bash
+docker compose -f prod/docker-compose.prod.yml exec -T postgres \
+  psql -U testci -d testci < /tmp/prod_full_dump.sql
+```
+
+Перенос конфиг‑таблиц между БД (dump в формате INSERT, чтобы избежать COPY):
+
+```bash
+docker compose -f test/docker-compose.test.yml exec -T postgres \
+  pg_dump -U testci -d testci --data-only --inserts --column-inserts \
+  --table=bot_config --table=bot_config_history \
+  --table=eventlog_filters --table=seafile_services \
+  > /tmp/test_config_dump.sql
+```
+
+Создать таблицы в целевой БД (если ещё нет):
+
+```bash
+docker compose -f prod/docker-compose.prod.yml exec -T postgres psql -U testci -d testci <<'SQL'
+CREATE TABLE IF NOT EXISTS eventlog_filters (
+  id SERIAL PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  match_type TEXT NOT NULL DEFAULT 'contains',
+  field TEXT NOT NULL,
+  pattern TEXT NOT NULL,
+  comment TEXT,
+  hits BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS seafile_services (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  repo_id TEXT NOT NULL,
+  auth_token TEXT,
+  username TEXT,
+  password TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+SQL
+```
+
+Вариант A: перенос с очисткой (перезапись):
+
+```bash
+docker compose -f prod/docker-compose.prod.yml exec -T postgres \
+  psql -U testci -d testci -c "TRUNCATE bot_config, bot_config_history, eventlog_filters, seafile_services RESTART IDENTITY;"
+
+docker compose -f prod/docker-compose.prod.yml exec -T postgres \
+  psql -U testci -d testci -v ON_ERROR_STOP=1 < /tmp/test_config_dump.sql
+```
+
+Вариант B: перенос без очистки (добавление):
+
+```bash
+docker compose -f prod/docker-compose.prod.yml exec -T postgres \
+  psql -U testci -d testci -v ON_ERROR_STOP=1 < /tmp/test_config_dump.sql
+```
+
 Пример фильтров eventlog (SQL):
 
 ```sql

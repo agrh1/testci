@@ -34,6 +34,7 @@ from bot.services.config_sync import ConfigSyncService
 from bot.services.eventlog_worker import EVENTLOG_STATE_KEY, eventlog_poll_once
 from bot.services.seafile_store import SeafileServiceStore
 from bot.services.user_store import TgProfile, UserStore
+from bot.utils.env_helpers import get_version_info
 from bot.utils.escalation import EscalationFilter
 from bot.utils.notify_router import explain_matches, pick_destinations
 from bot.utils.polling import PollingState
@@ -286,7 +287,7 @@ async def cmd_status(
     runtime_config: RuntimeConfig,
 ) -> None:
     env = get_env("ENVIRONMENT", "unknown")
-    git_sha = get_env("GIT_SHA", "unknown")
+    version, version_source = get_version_info()
     web_base_url = get_env("WEB_BASE_URL", "http://web:8000")
 
     if state_store is not None:
@@ -303,7 +304,8 @@ async def cmd_status(
 
     lines = [
         f"ENVIRONMENT: {env}",
-        f"GIT_SHA: {git_sha}",
+        f"VERSION: {version}",
+        f"VERSION_SOURCE: {version_source}",
         f"WEB_BASE_URL: {web_base_url}",
         "",
         "STATE STORE:",
