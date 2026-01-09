@@ -68,6 +68,44 @@ def _check_link(task_id: str, service: SeafileService, token: str) -> bool:
         return True
     return False
 
+def _list_share_links(task_id: str, service: SeafileService, token: str) -> Optional[list[dict]]:
+    headers = {
+        "Authorization": token,
+        "Accept": "application/json;charset=utf-8;indent=4",
+    }
+    path = "/" + task_id  # при необходимости можно сделать "/" + task_id + "/"
+    params = {"repo_id": service.repo_id, "path": path}
+
+    try:
+        res = requests.get(
+            f"{service.base_url.rstrip('/')}/api/v2.1/share-links/",
+            headers=headers,
+            params=params,
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning("Seafile list share-links error: %s", e)
+        return None
+
+    if res.status_code != 200:
+        logger.warning(
+            "Seafile list share-links unexpected status: %s body=%s",
+            res.status_code,
+            res.text,
+        )
+        return None
+
+    try:
+        data = res.json()
+    except Exception as e:
+        logger.warning("Seafile list share-links json error: %s body=%s", e, res.text)
+        return None
+
+    if isinstance(data, list):
+        return data
+
+    logger.warning("Seafile list share-links unexpected json: %s", data)
+    return None
 
 def get_download_link(task_id: str, service: SeafileService) -> dict:
     token = _get_auth_token(service)
@@ -80,8 +118,25 @@ def get_download_link(task_id: str, service: SeafileService) -> dict:
     if not exists:
         return {"status": "missing"}
 
+    # 1) GET existing
+    links = _list_share_links(task_id, service, token)
+    if links:
+        # берём первую (или можно выбрать “самую свежую” по ctime, если поле есть)
+        link = (links[0] or {}).get("link")
+        if link:
+            # Важно: пароль для уже созданной ссылки API обычно не возвращает.
+            return {
+                "status": "ok",
+                "link": str(link),
+                "password": "",
+                "expire_days": DOWNLOAD_EXPIRE_DAYS,
+                "existing": True,
+            }
+
+    # 2) POST create new
     password = _generate_password()
     res = _make_download_link(task_id, service, token, password=password)
+
     link = res.get("link")
     if link:
         return {
@@ -89,7 +144,14 @@ def get_download_link(task_id: str, service: SeafileService) -> dict:
             "link": str(link),
             "password": password,
             "expire_days": DOWNLOAD_EXPIRE_DAYS,
+            "existing": False,
         }
+
+    # Если API вернул error_msg — полезно отдать наружу (и залогировать).
+    err = res.get("error_msg") if isinstance(res, dict) else None
+    if err:
+        logger.warning("Seafile create share-link error_msg: %s", err)
+
     return {"status": "err"}
 
 
