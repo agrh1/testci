@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from bot.services.service_icon_store import ServiceIconStore
 from bot.utils.sd_state import make_ids_snapshot_hash, normalize_tasks_for_message
 from bot.utils.sd_web_client import SdOpenResult, SdWebClient
 from bot.utils.state_store import StateStore
@@ -56,25 +57,70 @@ class PollingState:
     rollback_alerts_skipped_rate_limit: int = 0
 
 
-def _fmt_state_message(*, normalized_items: list[dict[str, object]], max_items_in_message: int) -> str:
-    now_s = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+def _fmt_state_message(
+    *,
+    normalized_items: list[dict[str, object]],
+    max_items_in_message: int,
+    service_icons: Optional[dict[int, str]] = None,
+) -> str:
+    return format_open_tasks_message(
+        normalized_items=normalized_items,
+        max_items_in_message=max_items_in_message,
+        service_icons=service_icons,
+    )
 
+
+def format_open_tasks_message(
+    *,
+    normalized_items: list[dict[str, object]],
+    max_items_in_message: int,
+    service_icons: Optional[dict[int, str]] = None,
+) -> str:
     if len(normalized_items) == 0:
-        return f"📌 Открытых заявок нет ✅ — {now_s}"
+        return "no one items in 'Open' status"
 
     shown = normalized_items[:max_items_in_message]
-    lines = [f"📌 Открытые заявки ({len(normalized_items)}) — {now_s}"]
-    for t in shown:
-        lines.append(f"- #{t['Id']}: {t['Name']}")
-        creator = t.get("Creator")
-        if isinstance(creator, str) and creator.strip():
-            lines.append(f"  от: {creator}")
-        url = t.get("Url")
-        if isinstance(url, str) and url.strip():
-            lines.append(f"  ссылка: {url}")
+    lines: list[str] = []
+    for idx, t in enumerate(shown, start=1):
+        service_id = t.get("ServiceId")
+        service_code = str(t.get("ServiceCode") or "").strip()
+        service_name = str(t.get("ServiceName") or "").strip()
+        header = " ".join([x for x in [service_code, service_name] if x]).strip()
+        if not header and service_id is not None:
+            header = f"ServiceId {service_id}"
+        icon = ""
+        if service_icons and isinstance(service_id, int):
+            icon = service_icons.get(service_id, "")
+        if icon:
+            header = f"{icon}{header}"
+
+        if header:
+            lines.append(header)
+
+        lines.append(str(t.get("Id")))
+
+        created = str(t.get("Created") or "").strip()
+        if created:
+            lines.append(created.replace("T", " "))
+
+        name = str(t.get("Name") or "").strip()
+        if name:
+            lines.append(name)
+
+        creator = str(t.get("Creator") or "").strip()
+        if creator:
+            lines.append(creator)
+
+        url = str(t.get("Url") or "").strip()
+        if url:
+            lines.append(url)
+
+        if idx != len(shown):
+            lines.append("")
 
     rest = len(normalized_items) - len(shown)
     if rest > 0:
+        lines.append("")
         lines.append(f"… и ещё {rest} заявок")
 
     return "\n".join(lines)
@@ -148,6 +194,7 @@ async def polling_open_queue_loop(
     max_items_in_message: int = 10,
     store: Optional[StateStore] = None,
     store_key: str = "bot:polling_state",
+    service_icon_store: Optional[ServiceIconStore] = None,
 ) -> None:
     interval_s = base_interval_s
 
@@ -202,9 +249,17 @@ async def polling_open_queue_loop(
 
                 if changed:
                     normalized = normalize_tasks_for_message(res.items)
+                    service_icons: dict[int, str] = {}
+                    if service_icon_store is not None:
+                        try:
+                            icons = await service_icon_store.list_enabled()
+                            service_icons = {i.service_id: i.icon for i in icons if i.icon}
+                        except Exception:
+                            service_icons = {}
                     text = _fmt_state_message(
                         normalized_items=normalized,
                         max_items_in_message=max_items_in_message,
+                        service_icons=service_icons,
                     )
 
                     now = time.time()

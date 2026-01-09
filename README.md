@@ -199,6 +199,23 @@ Web хранит конфиг бота и историю версий в таб�
 
 - `seafile_services` — список Seafile сервисов для /get_link (name/base_url/repo_id/auth_token/username/password/enabled).
 - `eventlog_filters` — фильтры eventlog (enabled/match_type/field/pattern/hits).
+- `service_icons` — значки сервисов по ServiceId (service_code/service_name/icon/enabled).
+
+Пример значков сервисов (SQL):
+
+```sql
+INSERT INTO service_icons (service_id, service_code, service_name, icon, enabled)
+VALUES
+  (25, 'LENOVO', 'Lenovo Support', '❗', TRUE),
+  (42, 'NET', 'Network Team', '🌐', TRUE);
+```
+
+Примеры команд (admin):
+
+```
+/service_icons
+/service_icon_add 25 LENOVO ❗ Lenovo Support
+```
 
 ### Бэкапы и перенос между БД
 

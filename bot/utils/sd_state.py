@@ -19,8 +19,8 @@ def _to_int(value: object) -> Optional[int]:
 def normalize_tasks_for_message(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Нормализация для отображения пользователю:
-    - сортируем по Id
-    - берём Id, Name, Creator (строка) и ссылку на заявку
+    - берём Id, Name, Creator, Created, ServiceId/ServiceCode/ServiceName и ссылку
+    - порядок сохраняем как пришёл от API
     """
     base_url = (os.getenv("SERVICEDESK_BASE_URL", "").strip())
     normalized: list[dict[str, Any]] = []
@@ -28,16 +28,21 @@ def normalize_tasks_for_message(items: list[dict[str, Any]]) -> list[dict[str, A
         tid = _to_int(t.get("Id"))
         if tid is None or tid <= 0:
             continue
+        service_id = _to_int(t.get("ServiceId"))
         normalized.append(
             {
                 "Id": tid,
                 "Name": str(t.get("Name", "")),
                 "Creator": str(t.get("Creator", "")),
+                "Created": str(t.get("Created", "")),
+                "ServiceId": service_id,
+                "ServiceCode": str(t.get("ServiceCode", "")),
+                "ServiceName": str(t.get("ServiceName", "")),
                 "Url": f"{base_url}/task/view/{tid}",
             }
         )
 
-    return sorted(normalized, key=lambda x: x["Id"])
+    return normalized
 
 
 def make_ids_snapshot_hash(items: list[dict[str, Any]]) -> tuple[str, list[int]]:

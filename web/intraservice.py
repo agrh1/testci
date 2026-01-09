@@ -40,6 +40,8 @@ def list_tasks_by_status(
     page: int,
     pagesize: int,
     fields: str,
+    include: Optional[str] = None,
+    sort: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """
@@ -56,6 +58,10 @@ def list_tasks_by_status(
         "pagesize": str(pagesize),
         "fields": fields,
     }
+    if include:
+        params["include"] = include
+    if sort:
+        params["sort"] = sort
 
     headers = {"Accept": "application/json"}
     if request_id:

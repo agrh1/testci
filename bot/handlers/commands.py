@@ -33,13 +33,15 @@ from bot.middlewares.access_control import AccessControlMiddleware, AccessPolicy
 from bot.services.config_sync import ConfigSyncService
 from bot.services.eventlog_worker import EVENTLOG_STATE_KEY, eventlog_poll_once
 from bot.services.seafile_store import SeafileServiceStore
+from bot.services.service_icon_store import ServiceIconStore
 from bot.services.user_store import TgProfile, UserStore
 from bot.utils.env_helpers import get_version_info
 from bot.utils.escalation import EscalationFilter
 from bot.utils.notify_router import explain_matches, pick_destinations
-from bot.utils.polling import PollingState
+from bot.utils.polling import PollingState, format_open_tasks_message
 from bot.utils.runtime_config import RuntimeConfig
 from bot.utils.sd_api_client import SdApiClient
+from bot.utils.sd_state import normalize_tasks_for_message
 from bot.utils.sd_web_client import SdWebClient
 from bot.utils.seafile_client import getlink
 from bot.utils.state_store import StateStore
@@ -96,6 +98,8 @@ def register_handlers(dp: Dispatcher) -> None:
     admin_router.message.register(cmd_config_diff, Command("config_diff"))
     admin_router.message.register(cmd_last_eventlog_id, Command("last_eventlog_id"))
     admin_router.message.register(cmd_eventlog_poll, Command("eventlog_poll"))
+    admin_router.message.register(cmd_service_icons, Command("service_icons"))
+    admin_router.message.register(cmd_service_icon_add, Command("service_icon_add"))
 
     user_router.callback_query.register(cb_reset_password_cancel, F.data == "rp:cancel")
     user_router.callback_query.register(
@@ -275,6 +279,8 @@ async def cmd_help_admin(message: Message) -> None:
         "- /config_diff <from> <to>\n"
         "- /last_eventlog_id [set <id>]\n"
         "- /eventlog_poll\n"
+        "- /service_icons\n"
+        "- /service_icon_add <service_id> <service_code> <icon> [service_name]\n"
         "- /help_admin"
     )
 
@@ -356,7 +362,7 @@ async def cmd_needs_web(message: Message) -> None:
     await message.answer("web готов ✅")
 
 
-async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
+async def cmd_sd_open(message: Message, sd_web_client: SdWebClient, service_icon_store: ServiceIconStore) -> None:
     res = await sd_web_client.get_open(limit=20)
     if not res.ok:
         rid = f"\nrequest_id={res.request_id}" if res.request_id else ""
@@ -364,13 +370,18 @@ async def cmd_sd_open(message: Message, sd_web_client: SdWebClient) -> None:
         return
 
     if not res.items:
-        await message.answer("📌 Открытых заявок нет ✅")
+        await message.answer("no one items in 'Open' status")
         return
 
-    lines = [f"📌 Открытые заявки: {res.count_returned}", ""]
-    for t in res.items[:20]:
-        lines.append(f"- #{t.get('Id')}: {t.get('Name')}")
-    await message.answer("\n".join(lines))
+    normalized = normalize_tasks_for_message(res.items)
+    icons = await service_icon_store.list_enabled()
+    icon_map = {i.service_id: i.icon for i in icons if i.icon}
+    text = format_open_tasks_message(
+        normalized_items=normalized,
+        max_items_in_message=20,
+        service_icons=icon_map,
+    )
+    await message.answer(text)
 
 
 async def cmd_routes_test(message: Message, config_sync: ConfigSyncService, runtime_config: RuntimeConfig) -> None:
@@ -1270,6 +1281,54 @@ async def cmd_config_diff(message: Message, web_client: WebClient, config_admin_
         to = ch.get("to")
         lines.append(f"- {path}: {frm} -> {to}")
     await message.answer("\n".join(lines))
+
+
+async def cmd_service_icons(message: Message, service_icon_store: ServiceIconStore) -> None:
+    """
+    Показывает таблицу значков сервисов.
+    """
+    items = await service_icon_store.list_all(limit=100)
+    if not items:
+        await message.answer("service_icons пустая.")
+        return
+
+    lines = ["service_icons:"]
+    for it in items:
+        name = it.service_name or "—"
+        lines.append(
+            f"- service_id={it.service_id} code={it.service_code} icon={it.icon} enabled={it.enabled} name={name}"
+        )
+    await message.answer("\n".join(lines))
+
+
+async def cmd_service_icon_add(message: Message, service_icon_store: ServiceIconStore) -> None:
+    """
+    /service_icon_add <service_id> <service_code> <icon> [service_name]
+    """
+    parts = (message.text or "").split()
+    if len(parts) < 4:
+        await message.answer("Формат: /service_icon_add <service_id> <service_code> <icon> [service_name]")
+        return
+    try:
+        service_id = int(parts[1])
+    except Exception:
+        await message.answer("Некорректный service_id.")
+        return
+    service_code = parts[2].strip()
+    icon = parts[3].strip()
+    service_name = " ".join(parts[4:]).strip()
+    if not service_code or not icon:
+        await message.answer("Формат: /service_icon_add <service_id> <service_code> <icon> [service_name]")
+        return
+
+    await service_icon_store.upsert_icon(
+        service_id=service_id,
+        service_code=service_code,
+        icon=icon,
+        service_name=service_name,
+        enabled=True,
+    )
+    await message.answer(f"✅ service_icon сохранён для service_id={service_id}.")
 
 
 def _parse_target_id(message: Message) -> Optional[int]:

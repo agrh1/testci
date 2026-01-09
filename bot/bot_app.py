@@ -25,6 +25,7 @@ from bot.services.eventlog_worker import eventlog_loop
 from bot.services.notifications import NotificationService
 from bot.services.observability import ObservabilityService
 from bot.services.seafile_store import SeafileServiceStore
+from bot.services.service_icon_store import ServiceIconStore
 from bot.services.user_store import UserStore
 from bot.utils.config_client import ConfigClient
 from bot.utils.polling import PollingState, polling_open_queue_loop
@@ -103,6 +104,9 @@ async def main() -> None:
     eventlog_filter_store = EventlogFilterStore(settings.database_url)
     await eventlog_filter_store.init_schema()
 
+    service_icon_store = ServiceIconStore(settings.database_url)
+    await service_icon_store.init_schema()
+
     sd_api_client = SdApiClient(
         SdApiConfig(
             base_url=settings.servicedesk_base_url,
@@ -131,6 +135,7 @@ async def main() -> None:
     dp.workflow_data["seafile_store"] = seafile_store
     dp.workflow_data["sd_api_client"] = sd_api_client
     dp.workflow_data["eventlog_filter_store"] = eventlog_filter_store
+    dp.workflow_data["service_icon_store"] = service_icon_store
     dp.workflow_data["config_admin_token"] = settings.config_admin_token
     dp.workflow_data["eventlog_login"] = settings.servicedesk_login
     dp.workflow_data["eventlog_password"] = settings.servicedesk_password
@@ -179,6 +184,7 @@ async def main() -> None:
             max_items_in_message=settings.max_items_in_message,
             store=state_store,
             store_key="bot:open_queue",
+            service_icon_store=service_icon_store,
         ),
         name="polling_open_queue",
     )
