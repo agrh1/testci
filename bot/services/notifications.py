@@ -63,6 +63,27 @@ class NotificationService:
         for d in dests:
             await self._bot.send_message(chat_id=d.chat_id, message_thread_id=d.thread_id, text=text)
 
+    async def notify_eventlog(self, text: str, items: list[dict]) -> None:
+        """
+        Уведомления из eventlog (отдельная ветка маршрутизации).
+        """
+        await self._config_sync.refresh()
+        cfg = self._runtime_config.eventlog
+
+        dests = pick_destinations(
+            items=items,
+            rules=cfg.rules,
+            default_dest=cfg.default_dest,
+            service_id_field=cfg.service_id_field,
+            customer_id_field=cfg.customer_id_field,
+        )
+        if not dests:
+            self._logger.warning("eventlog: no destinations configured")
+            return
+
+        for d in dests:
+            await self._bot.send_message(chat_id=d.chat_id, message_thread_id=d.thread_id, text=text)
+
     async def notify_escalation(self, items: list[dict], _marker: str) -> None:
         """
         Эскалации — отдельный поток сообщений.

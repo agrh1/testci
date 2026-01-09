@@ -15,16 +15,20 @@ import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config.settings import BotSettings
 from bot.handlers import commands, errors
 from bot.services.config_sync import ConfigSyncService
+from bot.services.eventlog_worker import eventlog_loop
 from bot.services.notifications import NotificationService
 from bot.services.observability import ObservabilityService
+from bot.services.seafile_store import SeafileServiceStore
 from bot.services.user_store import UserStore
 from bot.utils.config_client import ConfigClient
 from bot.utils.polling import PollingState, polling_open_queue_loop
 from bot.utils.runtime_config import RuntimeConfig
+from bot.utils.sd_api_client import SdApiClient, SdApiConfig
 from bot.utils.sd_web_client import SdWebClient
 from bot.utils.state_store import MemoryStateStore, RedisStateStore, ResilientStateStore, StateStore
 from bot.utils.web_client import WebClient
@@ -92,11 +96,23 @@ async def main() -> None:
     await user_store.init_schema()
     await user_store.init_from_env(admins=settings.tg_admins, users=settings.tg_users)
 
+    seafile_store = SeafileServiceStore(settings.database_url)
+    await seafile_store.init_schema()
+
+    sd_api_client = SdApiClient(
+        SdApiConfig(
+            base_url=settings.servicedesk_base_url,
+            login=settings.servicedesk_login,
+            password=settings.servicedesk_password,
+            timeout_s=settings.servicedesk_timeout_s,
+        )
+    )
+
     runtime_config = RuntimeConfig(logger=logger, store=state_store, escalation_store_key="bot:escalation")
     config_sync = ConfigSyncService(config_client, runtime_config, logger)
 
     bot = Bot(token=settings.token)
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
 
     # Передаём зависимости в workflow_data, чтобы aiogram смог их инжектить.
     dp.workflow_data["web_client"] = web_client
@@ -108,6 +124,8 @@ async def main() -> None:
     dp.workflow_data["state_store"] = state_store
     dp.workflow_data["runtime_config"] = runtime_config
     dp.workflow_data["user_store"] = user_store
+    dp.workflow_data["seafile_store"] = seafile_store
+    dp.workflow_data["sd_api_client"] = sd_api_client
     dp.workflow_data["config_admin_token"] = settings.config_admin_token
 
     dp.errors.register(errors.on_error)
@@ -155,6 +173,23 @@ async def main() -> None:
         name="polling_open_queue",
     )
 
+    eventlog_task = None
+    if settings.eventlog_enabled:
+        eventlog_task = asyncio.create_task(
+            eventlog_loop(
+                stop_event=stop_event,
+                notify_eventlog=notify_service.notify_eventlog,
+                store=state_store,
+                login=settings.servicedesk_login,
+                password=settings.servicedesk_password,
+                base_url=settings.eventlog_base_url,
+                poll_interval_s=settings.eventlog_poll_interval_s,
+                keepalive_every=settings.eventlog_keepalive_every,
+                start_event_id=settings.eventlog_start_id,
+            ),
+            name="eventlog_loop",
+        )
+
     async def observability_loop() -> None:
         """
         Периодические проверки деградации и rollback.
@@ -187,6 +222,8 @@ async def main() -> None:
         stop_event.set()
         polling_task.cancel()
         observability_task.cancel()
+        if eventlog_task is not None:
+            eventlog_task.cancel()
         try:
             await polling_task
         except asyncio.CancelledError:
@@ -196,6 +233,11 @@ async def main() -> None:
             await observability_task
         except asyncio.CancelledError:
             pass
+        if eventlog_task is not None:
+            try:
+                await eventlog_task
+            except asyncio.CancelledError:
+                pass
 
 
 if __name__ == "__main__":

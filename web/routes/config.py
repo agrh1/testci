@@ -48,6 +48,7 @@ def get_config() -> Any:
             {
                 "version": 0,
                 "routing": {"rules": [], "default_dest": {"chat_id": None, "thread_id": None}},
+                "eventlog": {"rules": [], "default_dest": {"chat_id": None, "thread_id": None}},
                 "escalation": {"enabled": False},
                 "source": "fallback_no_db",
             }
@@ -56,6 +57,9 @@ def get_config() -> Any:
     data, err = read_config(engine)
     if err:
         return jsonify({"error": "config_read_failed", "detail": err}), 500
+
+    if "eventlog" not in data:
+        data["eventlog"] = {"rules": [], "default_dest": {"chat_id": None, "thread_id": None}}
 
     data["source"] = "postgres"
     return jsonify(data)

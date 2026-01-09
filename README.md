@@ -8,7 +8,7 @@ Web отвечает за проксирование запросов к Service
 ## Состав
 
 - Web (Flask): /health, /ready, /status, /sd/open, /config*.
-- Bot (aiogram): polling очереди, routing, escalation, admin‑алерты.
+- Bot (aiogram): polling очереди, routing, escalation, admin‑алерты, eventlog.
 - Postgres: хранение runtime‑конфига и истории, плюс база пользователей бота.
 - Redis: state store для polling и эскалаций (fallback в память, если Redis нет).
 
@@ -17,6 +17,7 @@ Web отвечает за проксирование запросов к Service
 - Получение открытых заявок ServiceDesk через /sd/open.
 - Routing уведомлений по правилам и default‑destination.
 - Эскалации при долгом ожидании.
+- Обработка eventlog ServiceDesk с отдельной веткой маршрутизации.
 - Хранение и версияция runtime‑конфига (/config).
 - Админ‑алерты при деградации web/redis или проблемах routing.
 
@@ -98,6 +99,14 @@ curl -s http://localhost:8000/health
 - `MIN_NOTIFY_INTERVAL_S` — минимальный интервал между уведомлениями.
 - `MAX_ITEMS_IN_MESSAGE` — максимум заявок в одном сообщении.
 
+### Eventlog
+
+- `EVENTLOG_ENABLED` — включить обработку eventlog.
+- `EVENTLOG_BASE_URL` — базовый URL (если отличается от ServiceDesk).
+- `EVENTLOG_POLL_INTERVAL_S` — интервал опроса при отсутствии событий.
+- `EVENTLOG_KEEPALIVE_EVERY` — через сколько циклов писать keep‑alive.
+- `EVENTLOG_START_ID` — стартовый event_id (0 = последний существующий).
+
 ### Routing (fallback через env)
 
 - `ROUTES_DEFAULT_CHAT_ID`, `ROUTES_DEFAULT_THREAD_ID` — destination по умолчанию.
@@ -125,6 +134,11 @@ curl -s http://localhost:8000/health
 - `ESCALATION_MENTION` — кого упомянуть.
 - `ESCALATION_SERVICE_ID_FIELD`, `ESCALATION_CUSTOMER_ID_FIELD` — поля фильтра.
 - `ESCALATION_FILTER` — JSON‑фильтр (keywords/service_ids/customer_ids).
+
+### Eventlog routing (fallback через env)
+
+- `EVENTLOG_DEFAULT_CHAT_ID`, `EVENTLOG_DEFAULT_THREAD_ID` — destination по умолчанию.
+- `EVENTLOG_RULES` — JSON с правилами для eventlog (keywords).
 
 ### Admin‑alerts и observability
 
@@ -160,6 +174,10 @@ Web хранит конфиг бота и историю версий в таб�
 
 `DATABASE_URL` обязателен для запуска бота.
 
+Дополнительно:
+
+- `seafile_services` — список Seafile сервисов для /get_link (name/base_url/repo_id/auth_token/username/password/enabled).
+
 ## Работа с Redis
 
 Redis используется как state store. Ключи с префиксом `testci:`
@@ -167,6 +185,7 @@ Redis используется как state store. Ключи с префикс�
 - `bot:polling_state` — состояние polling.
 - `bot:open_queue` — состояние очереди.
 - `bot:escalation` — состояние эскалаций.
+- `bot:eventlog` — last_event_id для eventlog.
 
 Если `REDIS_URL` не задан, используется in‑memory хранилище (без сохранения между рестартами).
 
@@ -184,7 +203,7 @@ curl -s -H "X-Config-Token: <token>" http://localhost:8000/config
 curl -s -X PUT \
   -H "Content-Type: application/json" \
   -H "X-Admin-Token: <admin_token>" \
-  -d '{"routing": {"rules": [], "default_dest": {"chat_id": -1001}}, "escalation": {"enabled": false}}' \
+  -d '{"routing": {"rules": [], "default_dest": {"chat_id": -1001}}, "eventlog": {"rules": [], "default_dest": {"chat_id": -1001}}, "escalation": {"enabled": false}}' \
   http://localhost:8000/config
 ```
 
@@ -223,4 +242,3 @@ Integration‑тесты запускаются только если задан
 ```bash
 WEB_TEST_URL=http://localhost:8000 pytest -q
 ```
-

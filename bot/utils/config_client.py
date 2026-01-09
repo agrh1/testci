@@ -23,6 +23,7 @@ CONFIG_TIMEOUT_S- таймаут HTTP запроса, по умолчанию 2.
 - version (int)
 - routing {...}
 - escalation {...}
+- eventlog {...} (опционально)
 
 Содержимое routing/escalation валидирует и парсит отдельный слой (RuntimeConfig).
 """

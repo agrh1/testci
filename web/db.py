@@ -54,17 +54,18 @@ def init_db(engine: Engine) -> None:
         row = s.get(BotConfig, 1)
         if row is None:
             s.add(
-                BotConfig(
-                    id=1,
-                    version=1,
-                    config_json=json.dumps(
-                        {
-                            "routing": {"rules": [], "default_dest": {}},
-                            "escalation": {"enabled": False},
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
+                    BotConfig(
+                        id=1,
+                        version=1,
+                        config_json=json.dumps(
+                            {
+                                "routing": {"rules": [], "default_dest": {}},
+                                "eventlog": {"rules": [], "default_dest": {}},
+                                "escalation": {"enabled": False},
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
             )
             s.commit()
 

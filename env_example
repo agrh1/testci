@@ -55,6 +55,20 @@ SERVICEDESK_PASSWORD=__REPLACE_ME__
 # Таймаут запросов к IntraService (сек).
 SERVICEDESK_TIMEOUT_S=10
 
+# -----------------------------
+# Eventlog (ServiceDesk legacy)
+# -----------------------------
+# Включить обработку eventlog (1/0).
+EVENTLOG_ENABLED=1
+# Базовый URL для eventlog (если отличается от SERVICEDESK_BASE_URL).
+EVENTLOG_BASE_URL=
+# Интервал опроса eventlog при отсутствии новых событий (сек).
+EVENTLOG_POLL_INTERVAL_S=600
+# Через сколько циклов писать "I'm work..." (например 48 * 10 мин = 8 часов).
+EVENTLOG_KEEPALIVE_EVERY=48
+# Начальный event_id (если 0 — берём последний существующий).
+EVENTLOG_START_ID=0
+
 # Токен бота нужен для readiness web (проверка наличия env).
 TELEGRAM_BOT_TOKEN=123456:ABCDEF
 
@@ -131,6 +145,15 @@ ROUTES_SERVICE_ID_FIELD=ServiceId
 ROUTES_CUSTOMER_ID_FIELD=CustomerId
 # JSON-правила маршрутизации.
 ROUTES_RULES=[]
+
+# -----------------------------
+# Eventlog routing (fallback)
+# -----------------------------
+# Destination для eventlog, если не задана в /config (ветка eventlog).
+EVENTLOG_DEFAULT_CHAT_ID=
+EVENTLOG_DEFAULT_THREAD_ID=
+# JSON-правила для eventlog (по keywords).
+EVENTLOG_RULES=[]
 
 # -----------------------------
 # Эскалация (fallback через env)

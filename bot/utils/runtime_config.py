@@ -53,6 +53,14 @@ class EscalationConfig:
     flt: EscalationFilter
 
 
+@dataclass
+class EventlogConfig:
+    rules: list
+    default_dest: Optional[Destination]
+    service_id_field: str
+    customer_id_field: str
+
+
 class RuntimeConfig:
     """Текущая активная конфигурация бота.
 
@@ -77,6 +85,7 @@ class RuntimeConfig:
         # активные настройки
         self.routing = self._load_routing_from_env()
         self.escalation = self._load_escalation_from_env(self.routing)
+        self.eventlog = self._load_eventlog_from_env(self.routing)
 
         # менеджер эскалации (создаём только если enabled)
         self._esc_manager: Optional[EscalationManager] = None
@@ -181,6 +190,46 @@ class RuntimeConfig:
             flt=flt,
         )
 
+    def _load_eventlog_from_env(self, routing: RoutingConfig) -> EventlogConfig:
+        def _to_int(x: str) -> Optional[int]:
+            try:
+                x = (x or "").strip()
+                if not x:
+                    return None
+                return int(x)
+            except Exception:
+                return None
+
+        def _dest(prefix: str) -> Optional[Destination]:
+            chat_id = _to_int(os.getenv(f"{prefix}_CHAT_ID", ""))
+            if chat_id is None:
+                return None
+            thread_id = _to_int(os.getenv(f"{prefix}_THREAD_ID", ""))
+            if thread_id == 0:
+                thread_id = None
+            return Destination(chat_id=chat_id, thread_id=thread_id)
+
+        default_dest = _dest("EVENTLOG_DEFAULT") or routing.default_dest
+
+        rules_raw = os.getenv("EVENTLOG_RULES", "").strip()
+        rules = []
+        if rules_raw:
+            try:
+                rules = parse_rules(json.loads(rules_raw))
+            except Exception as e:
+                self._log.error("EVENTLOG_RULES parse error: %s", e)
+                rules = []
+
+        service_id_field = os.getenv("EVENTLOG_SERVICE_ID_FIELD", routing.service_id_field).strip() or routing.service_id_field
+        customer_id_field = os.getenv("EVENTLOG_CUSTOMER_ID_FIELD", routing.customer_id_field).strip() or routing.customer_id_field
+
+        return EventlogConfig(
+            rules=rules,
+            default_dest=default_dest,
+            service_id_field=service_id_field,
+            customer_id_field=customer_id_field,
+        )
+
     # -----------------------------
     # Apply dynamic config
     # -----------------------------
@@ -207,11 +256,15 @@ class RuntimeConfig:
 
         routing_raw = data.get("routing")
         escalation_raw = data.get("escalation")
+        eventlog_raw = data.get("eventlog")
         if routing_raw is not None and not isinstance(routing_raw, dict):
             self._log.error("config: routing must be dict")
             return False
         if escalation_raw is not None and not isinstance(escalation_raw, dict):
             self._log.error("config: escalation must be dict")
+            return False
+        if eventlog_raw is not None and not isinstance(eventlog_raw, dict):
+            self._log.error("config: eventlog must be dict")
             return False
 
         # --- routing ---
@@ -267,12 +320,38 @@ class RuntimeConfig:
             self._log.error("config: escalation parse error: %s", e)
             return False
 
+        # --- eventlog ---
+        try:
+            if eventlog_raw is None:
+                new_eventlog = EventlogConfig(
+                    rules=new_routing.rules,
+                    default_dest=new_routing.default_dest,
+                    service_id_field=new_routing.service_id_field,
+                    customer_id_field=new_routing.customer_id_field,
+                )
+            else:
+                er = eventlog_raw or {}
+                rules = parse_rules(er.get("rules", []))
+                default_dest = parse_destination(er.get("default_dest"))
+                service_id_field = (er.get("service_id_field") or new_routing.service_id_field).strip() or new_routing.service_id_field
+                customer_id_field = (er.get("customer_id_field") or new_routing.customer_id_field).strip() or new_routing.customer_id_field
+                new_eventlog = EventlogConfig(
+                    rules=rules,
+                    default_dest=default_dest,
+                    service_id_field=service_id_field,
+                    customer_id_field=customer_id_field,
+                )
+        except Exception as e:
+            self._log.error("config: eventlog parse error: %s", e)
+            return False
+
         # Применяем атомарно: сначала всё распарсили, затем "переключили".
         old = self.version
         self.version = new_version
         self.source = str(data.get("source") or "web")
         self.routing = new_routing
         self.escalation = new_escalation
+        self.eventlog = new_eventlog
         self._rebuild_escalation_manager()
 
         self._log.info(

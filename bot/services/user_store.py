@@ -69,6 +69,12 @@ class UserStore:
         """
         await asyncio.to_thread(self._upsert_profile_sync, profile, role)
 
+    async def get_profile(self, telegram_id: int) -> Optional[TgProfile]:
+        """
+        Возвращает профиль пользователя или None.
+        """
+        return await asyncio.to_thread(self._get_profile_sync, telegram_id)
+
     async def delete_user(self, telegram_id: int) -> None:
         """
         Удаляет пользователя из таблицы.
@@ -236,6 +242,26 @@ class UserStore:
                     updated_at = now()
                 """,
                 (profile.telegram_id, role, profile.username, profile.full_name, profile.phone),
+            )
+
+    def _get_profile_sync(self, telegram_id: int) -> Optional[TgProfile]:
+        with self._connect() as conn, conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT telegram_id, username, full_name, phone
+                FROM tg_users
+                WHERE telegram_id = %s
+                """,
+                (telegram_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return TgProfile(
+                telegram_id=int(row["telegram_id"]),
+                username=str(row["username"] or ""),
+                full_name=str(row["full_name"] or ""),
+                phone=str(row["phone"] or ""),
             )
 
     def _delete_user_sync(self, telegram_id: int) -> None:

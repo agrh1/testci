@@ -51,6 +51,19 @@ def validate_escalation(escalation: Dict[str, Any]):
         validate_dest(escalation.get("dest", {}), "escalation.dest")
 
 
+def validate_eventlog(eventlog: Dict[str, Any]):
+    _require(isinstance(eventlog, dict), "eventlog must be object")
+
+    rules = eventlog.get("rules", [])
+    _require(isinstance(rules, list), "eventlog.rules must be array")
+    for i, rule in enumerate(rules):
+        _require(isinstance(rule, dict), f"eventlog.rules[{i}] must be object")
+        _require(isinstance(rule.get("enabled", True), bool), f"eventlog.rules[{i}].enabled must be bool")
+        validate_dest(rule.get("dest", {}), f"eventlog.rules[{i}]")
+
+    validate_dest(eventlog.get("default_dest", {}), "eventlog.default_dest")
+
+
 def validate_config(cfg: Dict[str, Any]):
     _require(isinstance(cfg, dict), "config must be object")
     _require("routing" in cfg, "routing missing")
@@ -58,3 +71,6 @@ def validate_config(cfg: Dict[str, Any]):
 
     validate_routing(cfg["routing"])
     validate_escalation(cfg["escalation"])
+
+    if "eventlog" in cfg:
+        validate_eventlog(cfg["eventlog"])

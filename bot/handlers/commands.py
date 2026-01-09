@@ -6,30 +6,53 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import time
 from typing import Optional
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot import ping_reply_text
 from bot.config.settings import get_env
 from bot.middlewares.access_control import AccessControlMiddleware, AccessPolicy
 from bot.services.config_sync import ConfigSyncService
+from bot.services.eventlog_worker import EVENTLOG_STATE_KEY
+from bot.services.seafile_store import SeafileServiceStore
 from bot.services.user_store import TgProfile, UserStore
 from bot.utils.escalation import EscalationFilter
 from bot.utils.notify_router import explain_matches, pick_destinations
 from bot.utils.polling import PollingState
 from bot.utils.runtime_config import RuntimeConfig
+from bot.utils.sd_api_client import SdApiClient
 from bot.utils.sd_web_client import SdWebClient
+from bot.utils.seafile_client import getlink
 from bot.utils.state_store import StateStore
 from bot.utils.web_client import WebClient
 from bot.utils.web_filters import WebReadyFilter
 
 _PENDING_SHARE_CONTACT: dict[int, dict[str, object]] = {}
+_PENDING_RESET_PASSWORD: dict[int, dict[str, object]] = {}
+
+
+class LinkRequest(StatesGroup):
+    waiting_for_service = State()
+    waiting_for_ticket = State()
+
 
 def register_handlers(dp: Dispatcher) -> None:
     """
@@ -47,6 +70,9 @@ def register_handlers(dp: Dispatcher) -> None:
     user_router.message.register(cmd_ping, Command("ping"))
     user_router.message.register(cmd_share_phone, Command("share_phone"))
     user_router.message.register(cmd_save_contact, F.contact)
+    user_router.message.register(cmd_reset_password, Command("reset_password"))
+    user_router.message.register(cmd_get_link, Command("get_link"))
+    user_router.message.register(cmd_get_link_ticket, StateFilter(LinkRequest.waiting_for_ticket))
 
     admin_router.message.register(cmd_status, Command("status"))
     admin_router.message.register(cmd_needs_web, Command("needs_web"), WebReadyFilter("/needs_web"))
@@ -67,6 +93,18 @@ def register_handlers(dp: Dispatcher) -> None:
     admin_router.message.register(cmd_share_contact, Command("share_contact"))
     admin_router.message.register(cmd_share_contact_phone, _is_pending_share_contact)
     admin_router.message.register(cmd_config_diff, Command("config_diff"))
+    admin_router.message.register(cmd_last_eventlog_id, Command("last_eventlog_id"))
+
+    user_router.callback_query.register(cb_reset_password_cancel, F.data == "rp:cancel")
+    user_router.callback_query.register(
+        cb_reset_password,
+        F.data.startswith("rp:") & (F.data != "rp:cancel"),
+    )
+    user_router.callback_query.register(
+        cb_get_link_service,
+        F.data.startswith("gl:"),
+        StateFilter(LinkRequest.waiting_for_service),
+    )
 
     dp.include_router(user_router)
     dp.include_router(admin_router)
@@ -184,7 +222,9 @@ async def cmd_start(message: Message, user_store: UserStore) -> None:
         "- /ping\n"
         "- /help\n"
         "- /share_phone (передать телефон для профиля)\n"
-        "- /sd_open — показать открытые заявки"
+        "- /sd_open — показать открытые заявки\n"
+        "- /reset_password — сбросить пароль в SD\n"
+        "- /get_link — ссылка на загрузку логов"
     )
     if role == "admin":
         text += "\n\nАдминские команды:\n- /help_admin"
@@ -204,7 +244,9 @@ async def cmd_help(message: Message) -> None:
         "Справка по командам:\n"
         "- /ping — проверка бота\n"
         "- /share_phone — передать телефон для профиля\n"
-        "- /sd_open — показать открытые заявки"
+        "- /sd_open — показать открытые заявки\n"
+        "- /reset_password — сбросить пароль в SD\n"
+        "- /get_link — ссылка на загрузку логов"
     )
 
 
@@ -229,6 +271,7 @@ async def cmd_help_admin(message: Message) -> None:
         "- /user_audit <id> [limit]\n"
         "- /share_contact <id> <phone>\n"
         "- /config_diff <from> <to>\n"
+        "- /last_eventlog_id [set <id>]\n"
         "- /help_admin"
     )
 
@@ -607,7 +650,7 @@ async def cmd_share_phone(message: Message, user_store: UserStore) -> None:
         )
 
 
-async def cmd_save_contact(message: Message, user_store: UserStore) -> None:
+async def cmd_save_contact(message: Message, user_store: UserStore, sd_api_client: SdApiClient) -> None:
     """
     Сохраняет телефон из contact-сообщения.
     """
@@ -628,6 +671,59 @@ async def cmd_save_contact(message: Message, user_store: UserStore) -> None:
         actor_id=profile.telegram_id,
     )
     await message.answer("✅ Телефон сохранён.", reply_markup=ReplyKeyboardRemove())
+
+    pending = _get_pending_reset_password(profile.telegram_id)
+    if pending is not None:
+        _clear_pending_reset_password(profile.telegram_id)
+        await _reset_password_flow(message, sd_api_client, profile.phone)
+
+
+async def cmd_reset_password(message: Message, user_store: UserStore, sd_api_client: SdApiClient) -> None:
+    """
+    Ищет пользователя по телефону и запускает сброс пароля.
+    """
+    if message.from_user is None:
+        return
+    profile = await user_store.get_profile(message.from_user.id)
+    phone = profile.phone if profile else ""
+    if not phone:
+        if message.chat.type != "private":
+            await message.answer(
+                "⚠️ Номер не найден. Отправка телефона доступна только в личном чате с ботом.\n"
+                "Напишите боту в личку и используйте /share_phone там."
+            )
+            return
+        _set_pending_reset_password(message.from_user.id)
+        await cmd_share_phone(message, user_store)
+        return
+
+    await _reset_password_flow(message, sd_api_client, phone)
+
+
+async def _reset_password_flow(message: Message, sd_api_client: SdApiClient, phone: str) -> None:
+    phone_norm = _normalize_phone(phone)
+    await message.answer("🔍 Выполняется поиск пользователей по мобильному номеру...")
+    try:
+        found_users = await asyncio.to_thread(sd_api_client.find_users_by_phone, phone_norm)
+    except Exception as e:
+        await message.answer(f"⚠️ Произошла ошибка: {e}")
+        return
+
+    if not found_users:
+        await message.answer(f"❌ Пользователи не найдены для {phone_norm}")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for user in found_users:
+        text = f"id: {user.get('Id')}, name: {user.get('Name')}"
+        builder.row(InlineKeyboardButton(text=text, callback_data=f"rp:{user.get('Id')}"))
+    builder.row(InlineKeyboardButton(text="Отмена", callback_data="rp:cancel"))
+
+    await message.answer(
+        f"К номеру {phone_norm} привязано {len(found_users)} записей.\n"
+        "Выберите запись, для которой нужно сбросить пароль.",
+        reply_markup=builder.as_markup(),
+    )
 
 
 async def cmd_share_contact(message: Message, user_store: UserStore) -> None:
@@ -698,6 +794,180 @@ async def cmd_share_contact_phone(message: Message, user_store: UserStore) -> No
     )
     _clear_pending_share_contact(message.from_user.id)
     await message.answer(f"✅ Телефон сохранён для пользователя {target_id}.")
+
+
+async def cmd_get_link(message: Message, state: FSMContext, seafile_store: SeafileServiceStore) -> None:
+    """
+    Запускает диалог получения ссылки на загрузку логов (Seafile).
+    """
+    services = await seafile_store.list_services(enabled_only=True)
+    if not services:
+        await message.answer("❌ Сервисы Seafile не настроены.")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for svc in services:
+        title = svc.name or svc.base_url
+        builder.row(InlineKeyboardButton(text=title, callback_data=f"gl:{svc.service_id}"))
+
+    await state.set_state(LinkRequest.waiting_for_service)
+    await message.answer("на какой ресурс нужно загрузить лог?", reply_markup=builder.as_markup())
+
+
+async def cb_get_link_service(callback: CallbackQuery, state: FSMContext, user_store: UserStore) -> None:
+    """
+    Сохраняет выбранный сервис и запрашивает номер тикета.
+    """
+    if callback.from_user is None:
+        return
+    role = await user_store.get_role(callback.from_user.id)
+    if role not in ("user", "admin"):
+        await callback.answer("⛔ Доступ запрещён.", show_alert=True)
+        return
+
+    data = callback.data or ""
+    if not data.startswith("gl:"):
+        return
+    try:
+        service_id = int(data.split(":", 1)[1])
+    except Exception:
+        await callback.answer("Некорректный сервис", show_alert=True)
+        return
+
+    await state.update_data(service_id=service_id)
+    await state.set_state(LinkRequest.waiting_for_ticket)
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer("Введите номер тикета:")
+    await callback.answer()
+
+
+async def cmd_get_link_ticket(
+    message: Message,
+    state: FSMContext,
+    seafile_store: SeafileServiceStore,
+) -> None:
+    """
+    Обрабатывает номер тикета и возвращает ссылку.
+    """
+    if not message.text:
+        return
+    ticket = message.text.strip()
+    if not ticket.isdigit():
+        await message.answer(
+            "Некорректный ввод.\n"
+            "В комментарии должен быть только номер тикета из цифр."
+        )
+        return
+
+    data = await state.get_data()
+    service_id = data.get("service_id")
+    if service_id is None:
+        await message.answer("Ошибка: не выбран сервис.")
+        await state.clear()
+        return
+
+    service = await seafile_store.get_service(int(service_id))
+    if service is None or not service.enabled:
+        await message.answer("Ошибка: сервис не найден или выключен.")
+        await state.clear()
+        return
+
+    try:
+        link = await asyncio.to_thread(getlink, ticket, service)
+    except Exception as e:
+        await message.answer(f"❌ Не удалось создать ссылку: {e}")
+        await state.clear()
+        return
+    if link == "err":
+        await message.answer("❌ Не удалось создать ссылку.")
+    else:
+        await message.answer(link)
+    await state.clear()
+
+
+async def cb_reset_password(callback: CallbackQuery, user_store: UserStore, sd_api_client: SdApiClient) -> None:
+    if callback.from_user is None:
+        return
+    role = await user_store.get_role(callback.from_user.id)
+    if role not in ("user", "admin"):
+        await callback.answer("⛔ Доступ запрещён.", show_alert=True)
+        return
+
+    data = callback.data or ""
+    if data == "rp:cancel":
+        return
+
+    try:
+        user_id = int(data.split(":", 1)[1])
+    except Exception:
+        await callback.answer("Некорректный идентификатор", show_alert=True)
+        return
+
+    try:
+        answer = await asyncio.to_thread(sd_api_client.reset_user_password, user_id)
+    except Exception as e:
+        if callback.message:
+            await callback.message.answer(f"⚠️ Произошла ошибка: {e}")
+        await callback.answer()
+        return
+    formatted_json = json.dumps(answer, indent=4, ensure_ascii=False)
+    text = f"<b>📄 Вот ваш JSON:</b>\n<pre><code>{formatted_json}</code></pre>"
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(text, parse_mode="HTML")
+        new_password = answer.get("new_password")
+        if new_password:
+            await callback.message.answer(
+                f"Скопировать пароль в буфер обмена:\n<code>{new_password}</code>",
+                parse_mode="HTML",
+            )
+    await callback.answer()
+
+
+async def cb_reset_password_cancel(callback: CallbackQuery, user_store: UserStore) -> None:
+    if callback.from_user is None:
+        return
+    role = await user_store.get_role(callback.from_user.id)
+    if role not in ("user", "admin"):
+        await callback.answer("⛔ Доступ запрещён.", show_alert=True)
+        return
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer("Сброс пароля отменен пользователем.")
+    await callback.answer()
+
+
+async def cmd_last_eventlog_id(message: Message, state_store: StateStore) -> None:
+    """
+    /last_eventlog_id
+    /last_eventlog_id set <id>
+    """
+    parts = (message.text or "").split()
+    if state_store is None:
+        await message.answer("State store отключен.")
+        return
+
+    if len(parts) == 1:
+        data = state_store.get_json(EVENTLOG_STATE_KEY) or {}
+        last_id = data.get("last_event_id")
+        if last_id is None:
+            await message.answer("Последний eventlog id: —")
+        else:
+            await message.answer(f"Последний eventlog id: {last_id}")
+        return
+
+    if len(parts) >= 3 and parts[1].lower() == "set":
+        try:
+            new_id = int(parts[2])
+        except Exception:
+            await message.answer("Формат: /last_eventlog_id set <id>")
+            return
+        state_store.set_json(EVENTLOG_STATE_KEY, {"last_event_id": new_id, "updated_at": time.time()})
+        await message.answer(f"✅ last_eventlog_id обновлён: {new_id}")
+        return
+
+    await message.answer("Формат: /last_eventlog_id или /last_eventlog_id set <id>")
 
 
 async def cmd_user_add(message: Message, user_store: UserStore) -> None:
@@ -1167,3 +1437,32 @@ def _is_pending_share_contact(message: Message) -> bool:
     if message.text.strip().startswith("/"):
         return False
     return _get_pending_share_contact(message.from_user.id) is not None
+
+
+def _normalize_phone(phone: str) -> str:
+    phone = phone.strip()
+    if phone.startswith("+7"):
+        return "8" + phone[2:]
+    if phone.startswith("79"):
+        return "8" + phone[1:]
+    return phone
+
+
+def _set_pending_reset_password(user_id: int) -> None:
+    _PENDING_RESET_PASSWORD[user_id] = {
+        "expires_at": time.time() + 300,
+    }
+
+
+def _get_pending_reset_password(user_id: int) -> Optional[dict[str, object]]:
+    item = _PENDING_RESET_PASSWORD.get(user_id)
+    if not item:
+        return None
+    if float(item.get("expires_at", 0)) < time.time():
+        _PENDING_RESET_PASSWORD.pop(user_id, None)
+        return None
+    return item
+
+
+def _clear_pending_reset_password(user_id: int) -> None:
+    _PENDING_RESET_PASSWORD.pop(user_id, None)

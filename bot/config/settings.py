@@ -78,6 +78,10 @@ class BotSettings:
     web_timeout_s: float
     web_cache_ttl_s: float
     sd_web_timeout_s: float
+    servicedesk_base_url: str
+    servicedesk_login: str
+    servicedesk_password: str
+    servicedesk_timeout_s: float
     config_url: str
     config_token: str
     config_ttl_s: float
@@ -100,6 +104,11 @@ class BotSettings:
     obs_web_alert_min_interval_s: float
     obs_redis_alert_min_interval_s: float
     obs_rollback_alert_min_interval_s: float
+    eventlog_base_url: str
+    eventlog_poll_interval_s: int
+    eventlog_keepalive_every: int
+    eventlog_start_id: int
+    eventlog_enabled: bool
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -115,6 +124,11 @@ class BotSettings:
         web_timeout_s = get_env_float("WEB_TIMEOUT_S", "1.5")
         web_cache_ttl_s = get_env_float("WEB_CACHE_TTL_S", "3.0")
         sd_web_timeout_s = get_env_float("SD_WEB_TIMEOUT_S", "3")
+
+        servicedesk_base_url = get_env("SERVICEDESK_BASE_URL", "").rstrip("/")
+        servicedesk_login = get_env("SERVICEDESK_LOGIN", "")
+        servicedesk_password = get_env("SERVICEDESK_PASSWORD", "")
+        servicedesk_timeout_s = get_env_float("SERVICEDESK_TIMEOUT_S", "10")
 
         config_url_default = f"{web_base_url}/config"
         config_url = get_env("CONFIG_URL", config_url_default).strip() or config_url_default
@@ -146,6 +160,12 @@ class BotSettings:
         obs_redis_alert_min_interval_s = get_env_float("OBS_REDIS_ALERT_MIN_INTERVAL_S", "300")
         obs_rollback_alert_min_interval_s = get_env_float("OBS_ROLLBACK_ALERT_MIN_INTERVAL_S", "300")
 
+        eventlog_base_url = get_env("EVENTLOG_BASE_URL", servicedesk_base_url).rstrip("/")
+        eventlog_poll_interval_s = get_env_int("EVENTLOG_POLL_INTERVAL_S", "600")
+        eventlog_keepalive_every = get_env_int("EVENTLOG_KEEPALIVE_EVERY", "48")
+        eventlog_start_id = get_env_int("EVENTLOG_START_ID", "0")
+        eventlog_enabled = get_env("EVENTLOG_ENABLED", "1").strip().lower() in ("1", "true", "yes")
+
         return cls(
             token=token,
             web_base_url=web_base_url,
@@ -153,6 +173,10 @@ class BotSettings:
             web_timeout_s=web_timeout_s,
             web_cache_ttl_s=web_cache_ttl_s,
             sd_web_timeout_s=sd_web_timeout_s,
+            servicedesk_base_url=servicedesk_base_url,
+            servicedesk_login=servicedesk_login,
+            servicedesk_password=servicedesk_password,
+            servicedesk_timeout_s=servicedesk_timeout_s,
             config_url=config_url,
             config_token=config_token,
             config_ttl_s=config_ttl_s,
@@ -175,4 +199,9 @@ class BotSettings:
             obs_web_alert_min_interval_s=obs_web_alert_min_interval_s,
             obs_redis_alert_min_interval_s=obs_redis_alert_min_interval_s,
             obs_rollback_alert_min_interval_s=obs_rollback_alert_min_interval_s,
+            eventlog_base_url=eventlog_base_url,
+            eventlog_poll_interval_s=eventlog_poll_interval_s,
+            eventlog_keepalive_every=eventlog_keepalive_every,
+            eventlog_start_id=eventlog_start_id,
+            eventlog_enabled=eventlog_enabled,
         )
