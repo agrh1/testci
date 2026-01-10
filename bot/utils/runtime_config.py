@@ -33,8 +33,8 @@ from bot.utils.escalation import (
     EscalationAction,
     EscalationFilter,
     EscalationManager,
+    EscalationMatch,
     EscalationRule,
-    match_escalation_filter,
 )
 from bot.utils.notify_router import Destination, parse_destination, parse_rules
 from bot.utils.state_store import StateStore
@@ -182,6 +182,7 @@ class RuntimeConfig:
         raw: Any,
         *,
         base_dest: Optional[Destination],
+        base_after_s: int,
     ) -> list[EscalationRule]:
         if not isinstance(raw, list):
             return []
@@ -204,10 +205,18 @@ class RuntimeConfig:
             else:
                 mention = None
 
+            after_s = base_after_s
+            if "after_s" in item:
+                try:
+                    after_s = int(item.get("after_s"))
+                except Exception:
+                    self._log.error("config: escalation.rules[%s].after_s must be int", idx)
+                    after_s = base_after_s
+
             flt_raw = item.get("filter") if isinstance(item.get("filter"), dict) else item
             flt = self._parse_escalation_filter(flt_raw)
 
-            rules.append(EscalationRule(dest=dest, mention=mention, flt=flt))
+            rules.append(EscalationRule(dest=dest, after_s=after_s, mention=mention, flt=flt))
 
         return rules
 
@@ -249,7 +258,7 @@ class RuntimeConfig:
             try:
                 raw = rules_env.strip()
                 payload = json.loads(raw) if raw else []
-                rules = self._parse_escalation_rules(payload, base_dest=dest)
+                rules = self._parse_escalation_rules(payload, base_dest=dest, base_after_s=after_s)
             except Exception as e:
                 self._log.error("ESCALATION_RULES parse error: %s", e)
         else:
@@ -261,7 +270,7 @@ class RuntimeConfig:
                 except Exception as e:
                     self._log.error("ESCALATION_FILTER parse error: %s", e)
             if dest is not None:
-                rules = [EscalationRule(dest=dest, mention=None, flt=flt)]
+                rules = [EscalationRule(dest=dest, after_s=after_s, mention=None, flt=flt)]
 
         return EscalationConfig(
             enabled=enabled,
@@ -403,13 +412,17 @@ class RuntimeConfig:
 
             rules_raw = er.get("rules")
             if rules_raw is not None:
-                rules = self._parse_escalation_rules(rules_raw, base_dest=dest)
+                rules = self._parse_escalation_rules(rules_raw, base_dest=dest, base_after_s=after_s)
             else:
                 flt = EscalationFilter()
                 jf = er.get("filter")
                 if isinstance(jf, dict):
                     flt = self._parse_escalation_filter(jf)
-                rules = [EscalationRule(dest=dest, mention=None, flt=flt)] if dest is not None else []
+                rules = (
+                    [EscalationRule(dest=dest, after_s=after_s, mention=None, flt=flt)]
+                    if dest is not None
+                    else []
+                )
 
             new_escalation = EscalationConfig(
                 enabled=enabled,
@@ -496,7 +509,6 @@ class RuntimeConfig:
         self._esc_manager = EscalationManager(
             store=self._store,
             store_key=self._esc_store_key,
-            after_s=self.escalation.after_s,
             service_id_field=self.escalation.service_id_field,
             customer_id_field=self.escalation.customer_id_field,
             creator_id_field=self.escalation.creator_id_field,
@@ -512,33 +524,23 @@ class RuntimeConfig:
         if self._esc_manager is None:
             return []
 
-        due = self._esc_manager.process(items)
-        if not due:
+        matches: list[EscalationMatch] = self._esc_manager.process(items)
+        if not matches:
             return []
 
         actions: dict[tuple[int, Optional[int], str], EscalationAction] = {}
-        for it in due:
-            for rule in self.escalation.rules:
-                if not match_escalation_filter(
-                    it,
-                    rule.flt,
-                    service_id_field=self.escalation.service_id_field,
-                    customer_id_field=self.escalation.customer_id_field,
-                    creator_id_field=self.escalation.creator_id_field,
-                    creator_company_id_field=self.escalation.creator_company_id_field,
-                ):
-                    continue
+        for match in matches:
+            rule = match.rule
+            dest = rule.dest or self.escalation.dest
+            if dest is None:
+                continue
 
-                dest = rule.dest or self.escalation.dest
-                if dest is None:
-                    continue
-
-                mention = rule.mention or self.escalation.mention
-                key = (dest.chat_id, dest.thread_id, mention)
-                action = actions.get(key)
-                if action is None:
-                    action = EscalationAction(dest=dest, mention=mention, items=[])
-                    actions[key] = action
-                action.items.append(it)
+            mention = rule.mention or self.escalation.mention
+            key = (dest.chat_id, dest.thread_id, mention)
+            action = actions.get(key)
+            if action is None:
+                action = EscalationAction(dest=dest, mention=mention, items=[])
+                actions[key] = action
+            action.items.append(match.item)
 
         return list(actions.values())

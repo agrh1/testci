@@ -32,6 +32,7 @@
 
 Если фильтр пустой — эскалируем всё, что висит дольше after_s.
 При нескольких правилах достаточно совпадения хотя бы одного фильтра.
+В каждом правиле after_s может переопределять базовый порог.
 """
 from __future__ import annotations
 
@@ -55,6 +56,7 @@ class EscalationFilter:
 @dataclass(frozen=True)
 class EscalationRule:
     dest: Destination
+    after_s: int = 0
     mention: Optional[str] = None
     flt: EscalationFilter = EscalationFilter()
 
@@ -66,12 +68,18 @@ class EscalationAction:
     items: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class EscalationMatch:
+    rule: EscalationRule
+    item: dict[str, Any]
+
+
 @dataclass
 class EscalationState:
     # id -> unix ts when first seen in open queue
     seen_at: dict[str, float]
-    # id -> unix ts when escalated (to avoid repeats)
-    escalated_at: dict[str, float]
+    # rule_key -> (id -> unix ts when escalated)
+    escalated_at: dict[str, dict[str, float]]
 
 
 def match_escalation_filter(
@@ -134,7 +142,6 @@ class EscalationManager:
         *,
         store: Optional[StateStore],
         store_key: str,
-        after_s: int,
         service_id_field: str,
         customer_id_field: str,
         creator_id_field: str,
@@ -143,7 +150,6 @@ class EscalationManager:
     ) -> None:
         self._store = store
         self._store_key = store_key
-        self._after_s = after_s
         self._service_id_field = service_id_field
         self._customer_id_field = customer_id_field
         self._creator_id_field = creator_id_field
@@ -162,7 +168,17 @@ class EscalationManager:
         if isinstance(seen, dict):
             self._state.seen_at = {str(k): float(v) for k, v in seen.items() if _to_int(k) is not None}
         if isinstance(esc, dict):
-            self._state.escalated_at = {str(k): float(v) for k, v in esc.items() if _to_int(k) is not None}
+            if esc and all(isinstance(v, (int, float)) for v in esc.values()):
+                self._state.escalated_at = {
+                    "legacy": {str(k): float(v) for k, v in esc.items() if _to_int(k) is not None}
+                }
+            else:
+                out: dict[str, dict[str, float]] = {}
+                for rule_key, items in esc.items():
+                    if not isinstance(items, dict):
+                        continue
+                    out[str(rule_key)] = {str(k): float(v) for k, v in items.items() if _to_int(k) is not None}
+                self._state.escalated_at = out
 
     def _save(self) -> None:
         if self._store is None:
@@ -176,24 +192,22 @@ class EscalationManager:
     def _id_of(self, item: dict[str, Any]) -> Optional[int]:
         return _to_int(item.get("Id"))
 
-    def _match_item_rules(self, item: dict[str, Any]) -> bool:
-        if not self._rules:
-            return False
-        for rule in self._rules:
-            if match_escalation_filter(
-                item,
-                rule.flt,
-                service_id_field=self._service_id_field,
-                customer_id_field=self._customer_id_field,
-                creator_id_field=self._creator_id_field,
-                creator_company_id_field=self._creator_company_id_field,
-            ):
-                return True
-        return False
+    def _rule_key(self, rule: EscalationRule, idx: int) -> str:
+        dest = rule.dest
+        thread = dest.thread_id if dest.thread_id is not None else 0
+        flt = rule.flt
+        return (
+            f"{idx}:{dest.chat_id}:{thread}:{rule.after_s}:"
+            f"{rule.mention or ''}:{','.join(flt.keywords)}:"
+            f"{','.join(str(x) for x in flt.service_ids)}:"
+            f"{','.join(str(x) for x in flt.customer_ids)}:"
+            f"{','.join(str(x) for x in flt.creator_ids)}:"
+            f"{','.join(str(x) for x in flt.creator_company_ids)}"
+        )
 
-    def process(self, items: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    def process(self, items: Sequence[dict[str, Any]]) -> list[EscalationMatch]:
         """
-        Обновляет state и возвращает список тикетов, которые нужно эскалировать сейчас.
+        Обновляет state и возвращает список совпавших правил эскалации.
         """
         now = time.time()
 
@@ -218,23 +232,38 @@ class EscalationManager:
                 self._state.seen_at.pop(k, None)
                 self._state.escalated_at.pop(k, None)
 
-        to_escalate: list[dict[str, Any]] = []
+        to_escalate: list[EscalationMatch] = []
+        legacy = self._state.escalated_at.get("legacy", {})
 
-        # выбираем те, кто "старше порога" и еще не эскалировались
-        for k in current_ids:
-            it = id_to_item.get(k)
-            if not it:
-                continue
+        # выбираем те, кто "старше порога" и еще не эскалировались по правилу
+        for idx, rule in enumerate(self._rules, start=1):
+            rule_key = self._rule_key(rule, idx)
+            rule_escalated = self._state.escalated_at.get(rule_key, {})
+            for k in current_ids:
+                if k in rule_escalated or k in legacy:
+                    continue
+                it = id_to_item.get(k)
+                if not it:
+                    continue
+                if not match_escalation_filter(
+                    it,
+                    rule.flt,
+                    service_id_field=self._service_id_field,
+                    customer_id_field=self._customer_id_field,
+                    creator_id_field=self._creator_id_field,
+                    creator_company_id_field=self._creator_company_id_field,
+                ):
+                    continue
 
-            if not self._match_item_rules(it):
-                continue
+                seen_at = self._state.seen_at.get(k, now)
+                age = now - seen_at
+                if age < rule.after_s:
+                    continue
 
-            seen_at = self._state.seen_at.get(k, now)
-            age = now - seen_at
-
-            if age >= self._after_s and k not in self._state.escalated_at:
-                self._state.escalated_at[k] = now
-                to_escalate.append(it)
+                if rule_key not in self._state.escalated_at:
+                    self._state.escalated_at[rule_key] = {}
+                self._state.escalated_at[rule_key][k] = now
+                to_escalate.append(EscalationMatch(rule=rule, item=it))
 
         self._save()
         return to_escalate

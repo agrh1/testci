@@ -44,7 +44,7 @@ def test_validate_config_escalation_rules() -> None:
             "after_s": 300,
             "mention": "@duty",
             "rules": [
-                {"dest": {"chat_id": 10, "thread_id": None}, "keywords": ["vip"]},
+                {"dest": {"chat_id": 10, "thread_id": None}, "after_s": 120, "keywords": ["vip"]},
                 {"dest": {"chat_id": 11, "thread_id": 1}, "service_ids": [101]},
             ],
         },

@@ -202,7 +202,9 @@ def _config_help_text() -> str:
         "Формат /config:\n"
         "1) /config — показать текущий конфиг\n"
         "2) /config ? — справка\n"
-        "3) /config <json> — обновить конфиг\n"
+        "3) /config check — показать краткую сводку\n"
+        "4) /config reload — принудительно перезагрузить конфиг\n"
+        "5) /config <json> — обновить конфиг\n"
         "\n"
         "Обновление полностью заменяет конфиг.\n"
         "Чтобы поменять одно поле — сначала /config, потом редактируйте JSON.\n"
@@ -221,7 +223,8 @@ def _config_help_text() -> str:
         "- after_s (int)\n"
         "- mention (строка, например \"@duty_engineer\") — базовый mention\n"
         "- rules: список правил (можно [])\n"
-        "  rule: {enabled?, dest?, mention?, keywords?, service_ids?, customer_ids?, creator_ids?, creator_company_ids?}\n"
+        "  rule: {enabled?, dest?, mention?, after_s?, keywords?, service_ids?, customer_ids?, creator_ids?, creator_company_ids?}\n"
+        "  rule.after_s переопределяет базовый escalation.after_s\n"
         "- dest/filter: устаревший одиночный режим (если rules не задан)\n"
         "- service_id_field, customer_id_field, creator_id_field, creator_company_id_field (опционально)\n"
         "\n"
@@ -259,6 +262,7 @@ def _config_help_text() -> str:
         '    "rules": [\n'
         "      {\n"
         '        "dest": {"chat_id": -100222, "thread_id": null},\n'
+        '        "after_s": 1800,\n'
         '        "mention": "@vip_duty",\n'
         '        "keywords": ["vip"],\n'
         '        "service_ids": [101],\n'
@@ -280,6 +284,22 @@ def _config_help_text() -> str:
         "  }\n"
         "}"
     )
+
+
+def _config_summary_text(runtime_config: RuntimeConfig) -> str:
+    routing = runtime_config.routing
+    eventlog = runtime_config.eventlog
+    esc = runtime_config.escalation
+    lines = [
+        "📦 Конфиг (сводка):",
+        f"- version: {runtime_config.version} ({runtime_config.source})",
+        f"- routing.rules: {len(routing.rules)} (default_dest={'yes' if routing.default_dest else 'no'})",
+        f"- eventlog.rules: {len(eventlog.rules)} (default_dest={'yes' if eventlog.default_dest else 'no'})",
+        f"- escalation.enabled: {'yes' if esc.enabled else 'no'}",
+        f"- escalation.rules: {len(esc.rules)} (after_s={esc.after_s})",
+        f"- escalation.mention: {esc.mention}",
+    ]
+    return "\n".join(lines)
 
 
 def _build_fake_item(
@@ -368,7 +388,7 @@ async def cmd_help_admin(message: Message) -> None:
         "- /user_history <id> [limit]\n"
         "- /user_audit <id> [limit]\n"
         "- /share_contact <id> <phone>\n"
-        "- /config [ ? | <json> ]\n"
+        "- /config [ ? | check | reload | <json> ]\n"
         "- /config_diff <from> <to>\n"
         "- /last_eventlog_id [set <id>]\n"
         "- /eventlog_poll\n"
@@ -465,6 +485,16 @@ async def cmd_config(
     arg = _parse_command_arg(message.text or "")
     if arg in {"?", "help", "/?", "-h", "--help"} or arg.startswith("?"):
         await message.answer(_config_help_text())
+        return
+
+    if arg in {"check", "status"}:
+        await config_sync.refresh(force=False)
+        await message.answer(_config_summary_text(runtime_config))
+        return
+
+    if arg in {"reload", "refresh"}:
+        await config_sync.refresh(force=True)
+        await message.answer("✅ Конфиг перезагружен.\n" + _config_summary_text(runtime_config))
         return
 
     if not arg:
@@ -788,9 +818,10 @@ async def cmd_escalation_send_test(
         key = (dest.chat_id, dest.thread_id, mention)
         entry = actions.get(key)
         if entry is None:
-            entry = {"dest": dest, "mention": mention, "rule_indexes": []}
+            entry = {"dest": dest, "mention": mention, "rule_indexes": [], "rule_after_s": []}
             actions[key] = entry
         entry["rule_indexes"].append(idx)
+        entry["rule_after_s"].append(rule.after_s)
 
     if not actions:
         lines = [
@@ -820,10 +851,11 @@ async def cmd_escalation_send_test(
     for entry in actions.values():
         dest = entry["dest"]
         mention = entry["mention"]
+        after_s_list = sorted(set(entry["rule_after_s"]))
         text = (
             "🚨 TEST MESSAGE (escalation)\n"
             f"Time: {ts}\n"
-            f"After_s (config): {esc.after_s}\n"
+            f"After_s (rules): {', '.join(str(v) for v in after_s_list)}\n"
             f"{mention} заберите в работу, пожалуйста.\n"
             "\n"
             f"- #{fake.get('Id')}: {fake.get('Name')}\n"

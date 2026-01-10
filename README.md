@@ -161,6 +161,7 @@ curl -s http://localhost:8000/health
 [
   {
     "dest": {"chat_id": -100333, "thread_id": 2},
+    "after_s": 1800,
     "mention": "@vip_duty",
     "keywords": ["VIP"],
     "creator_ids": [7001]
@@ -362,6 +363,8 @@ Redis используется как state store. Ключи с префикс�
 
 - `/config` — показать текущий конфиг.
 - `/config ?` — справка по формату и полям.
+- `/config check` — краткая сводка по текущему runtime‑конфигу.
+- `/config reload` — принудительно перезагрузить конфиг из web.
 - `/config <json>` — полностью заменить конфиг (bot делает PUT /config).
 
 Важно: обновление полностью заменяет конфиг. Чтобы изменить одно поле —
@@ -397,6 +400,7 @@ Redis используется как state store. Ключи с префикс�
 - `rules` (опционально): список правил
   - `enabled` (bool, опционально)
   - `dest` (опционально): `{chat_id, thread_id}`
+  - `after_s` (int, опционально) — переопределяет базовый `after_s`
   - `mention` (string, опционально)
   - `keywords` (list[str], опционально)
   - `service_ids` (list[int], опционально)
@@ -416,6 +420,11 @@ Redis используется как state store. Ключи с префикс�
 - `customer_id_field` (string, опционально)
 - `creator_id_field` (string, опционально)
 - `creator_company_id_field` (string, опционально)
+
+Примечания по переопределениям:
+- В `escalation.rules` можно переопределять `dest`, `mention`, `after_s`. Если поле не задано — берётся базовое из `escalation`.
+- В `routing`/`eventlog` поля `*_field` задаются только на верхнем уровне и применяются ко всем правилам.
+- В `routing.rules` `dest` обязателен; в `eventlog.rules` тоже.
 
 ### Получить конфиг
 
@@ -479,10 +488,104 @@ curl -s -X PUT \
     "rules": [
       {
         "dest": {"chat_id": -100333, "thread_id": 2},
+        "after_s": 1800,
         "mention": "@vip_duty",
         "keywords": ["VIP", "P1"],
         "service_ids": [101],
         "creator_ids": [7001]
+      }
+    ],
+    "service_id_field": "ServiceId",
+    "customer_id_field": "CustomerId",
+    "creator_id_field": "CreatorId",
+    "creator_company_id_field": "CreatorCompanyId"
+  }
+}
+```
+
+Пример полного конфига (несколько правил и переопределения в эскалациях):
+
+```json
+{
+  "routing": {
+    "rules": [
+      {
+        "enabled": true,
+        "dest": {"chat_id": -1001901241849, "thread_id": 10},
+        "keywords": ["VIP", "P1"],
+        "service_ids": [101, 102],
+        "customer_ids": [5001],
+        "creator_ids": [7001],
+        "creator_company_ids": [9001]
+      },
+      {
+        "enabled": true,
+        "dest": {"chat_id": -1001901241849, "thread_id": 11},
+        "keywords": ["Сбой", "Авария"],
+        "service_ids": [103],
+        "customer_ids": [],
+        "creator_ids": [],
+        "creator_company_ids": [9002]
+      }
+    ],
+    "default_dest": {"chat_id": -1001901241849, "thread_id": null},
+    "service_id_field": "ServiceId",
+    "customer_id_field": "CustomerId",
+    "creator_id_field": "CreatorId",
+    "creator_company_id_field": "CreatorCompanyId"
+  },
+  "eventlog": {
+    "rules": [
+      {
+        "enabled": true,
+        "dest": {"chat_id": -1001901241849, "thread_id": 4},
+        "keywords": ["Ошибка", "Сбой"],
+        "service_ids": [101],
+        "customer_ids": [],
+        "creator_ids": [],
+        "creator_company_ids": []
+      }
+    ],
+    "default_dest": {"chat_id": -1001901241849, "thread_id": 4},
+    "service_id_field": "ServiceId",
+    "customer_id_field": "CustomerId",
+    "creator_id_field": "CreatorId",
+    "creator_company_id_field": "CreatorCompanyId"
+  },
+  "escalation": {
+    "enabled": true,
+    "after_s": 3600,
+    "mention": "@duty_engineer",
+    "rules": [
+      {
+        "enabled": true,
+        "dest": {"chat_id": -1001901241849, "thread_id": 8432},
+        "after_s": 1800,
+        "mention": "@vip_duty",
+        "keywords": ["VIP", "P1"],
+        "service_ids": [101],
+        "customer_ids": [5001],
+        "creator_ids": [7001],
+        "creator_company_ids": []
+      },
+      {
+        "enabled": true,
+        "dest": {"chat_id": -1001901241849, "thread_id": 8433},
+        "after_s": 7200,
+        "mention": "",
+        "keywords": ["Авария", "Сбой"],
+        "service_ids": [],
+        "customer_ids": [],
+        "creator_ids": [],
+        "creator_company_ids": [9001]
+      },
+      {
+        "enabled": true,
+        "keywords": ["Потеря связи"],
+        "service_ids": [104],
+        "customer_ids": [],
+        "creator_ids": [],
+        "creator_company_ids": []
       }
     ],
     "service_id_field": "ServiceId",

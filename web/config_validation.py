@@ -53,6 +53,8 @@ def validate_escalation(escalation: Dict[str, Any]):
             _require(isinstance(rules, list), "escalation.rules must be array")
             for i, rule in enumerate(rules):
                 _require(isinstance(rule, dict), f"escalation.rules[{i}] must be object")
+                if "after_s" in rule:
+                    _require(isinstance(rule.get("after_s"), int), f"escalation.rules[{i}].after_s must be int")
                 if "dest" in rule:
                     validate_dest(rule.get("dest", {}), f"escalation.rules[{i}]")
         else:
