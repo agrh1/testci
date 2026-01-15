@@ -71,6 +71,7 @@ def register_handlers(dp: Dispatcher) -> None:
     user_router.message.register(cmd_start, Command("start"))
     user_router.message.register(cmd_help, Command("help"))
     user_router.message.register(cmd_ping, Command("ping"))
+    user_router.message.register(cmd_my_id, Command("my_id"))
     user_router.message.register(cmd_share_phone, Command("share_phone"))
     user_router.message.register(cmd_save_contact, F.contact)
     user_router.message.register(cmd_reset_password, Command("reset_password"))
@@ -353,6 +354,22 @@ async def cmd_start(message: Message, user_store: UserStore) -> None:
 
 async def cmd_ping(message: Message) -> None:
     await message.answer(ping_reply_text())
+
+
+async def cmd_my_id(message: Message, bot: Bot) -> None:
+    if message.from_user is None:
+        await message.answer("no from_user")
+        return
+
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    bot_user = await bot.get_me()
+    await message.answer(
+        "IDs:\n"
+        f"- user_id: {user_id}\n"
+        f"- chat_id: {chat_id}\n"
+        f"- bot: @{bot_user.username} ({bot_user.id})"
+    )
 
 
 async def cmd_help(message: Message) -> None:
