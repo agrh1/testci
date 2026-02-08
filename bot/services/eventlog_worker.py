@@ -30,6 +30,7 @@ async def eventlog_loop(
     poll_interval_s: int = 600,
     keepalive_every: int = 48,
     start_event_id: int = 0,
+    soft_catchup_after: int = 3,
 ) -> None:
     if not login or not password or not base_url:
         logger.warning("eventlog disabled: missing credentials or base_url")
@@ -50,8 +51,16 @@ async def eventlog_loop(
         logger.info("eventlog start: last_event_id=%s", last_event_id)
 
     timer = 0
+    no_item_streak = 0
 
     while not stop_event.is_set():
+        # Allow live updates of last_event_id via state store (e.g. /last_eventlog_id set <id>).
+        stored_last_id = _load_last_event_id(store)
+        if stored_last_id is not None and stored_last_id > last_event_id:
+            logger.info("eventlog live update: last_event_id %s -> %s", last_event_id, stored_last_id)
+            last_event_id = stored_last_id
+            timer = 0
+
         next_id = last_event_id + 1
         logger.debug("eventlog poll: next_id=%s", next_id)
         try:
@@ -60,6 +69,26 @@ async def eventlog_loop(
             logger.warning("eventlog get_item error: next_id=%s err=%s", next_id, e)
             res = None
         if res is None:
+            no_item_streak += 1
+            if soft_catchup_after > 0 and no_item_streak >= soft_catchup_after:
+                try:
+                    last_item = await asyncio.to_thread(get_last_item, login, password, base_url)
+                    if last_item is not None:
+                        last_item_id = int(last_item)
+                        if last_item_id > next_id:
+                            logger.info(
+                                "eventlog soft catchup: next_id=%s -> last_item=%s",
+                                next_id,
+                                last_item_id,
+                            )
+                            last_event_id = last_item_id - 1
+                            _save_last_event_id(store, last_event_id)
+                            timer = 0
+                            no_item_streak = 0
+                            continue
+                except Exception as e:
+                    logger.warning("eventlog soft catchup error: %s", e)
+
             timer += 1
             logger.debug("eventlog no item: next_id=%s timer=%s", next_id, timer)
             if keepalive_every > 0 and timer >= keepalive_every:
@@ -85,6 +114,7 @@ async def eventlog_loop(
             break
 
         timer = 0
+        no_item_streak = 0
         try:
             message = await asyncio.to_thread(parse_event, res)
         except Exception as e:
