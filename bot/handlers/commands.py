@@ -101,6 +101,7 @@ def register_handlers(dp: Dispatcher) -> None:
     admin_router.message.register(cmd_config_diff, Command("config_diff"))
     admin_router.message.register(cmd_last_eventlog_id, Command("last_eventlog_id"))
     admin_router.message.register(cmd_eventlog_poll, Command("eventlog_poll"))
+    admin_router.message.register(cmd_eventlog_filters, Command("eventlog_filters"))
     admin_router.message.register(cmd_service_icons, Command("service_icons"))
     admin_router.message.register(cmd_service_icon_add, Command("service_icon_add"))
 
@@ -411,6 +412,7 @@ async def cmd_help_admin(message: Message) -> None:
         "- /config_diff <from> <to>\n"
         "- /last_eventlog_id [set <id>]\n"
         "- /eventlog_poll\n"
+        "- /eventlog_filters\n"
         "- /service_icons\n"
         "- /service_icon_add <service_id> <service_code> <icon> [service_name]\n"
         "- /help_admin"
@@ -1367,6 +1369,30 @@ async def cmd_eventlog_poll(
         lines.append(f"error: {err}")
     if parse_error:
         lines.append(f"parse_error: {parse_error}")
+    await message.answer("\n".join(lines))
+
+
+async def cmd_eventlog_filters(message: Message, eventlog_filter_store) -> None:
+    """
+    Показать активные фильтры eventlog.
+    """
+    if eventlog_filter_store is None:
+        await message.answer("Eventlog filter store отключен.")
+        return
+    try:
+        filters = await eventlog_filter_store.list_enabled()
+    except Exception as e:
+        await message.answer(f"Ошибка загрузки фильтров: {e}")
+        return
+    if not filters:
+        await message.answer("Активных eventlog-фильтров нет.")
+        return
+
+    lines = ["Активные eventlog-фильтры:"]
+    for f in filters:
+        lines.append(
+            f"- id={f.filter_id} field={f.field} match={f.match_type} pattern={f.pattern} hits={f.hits}"
+        )
     await message.answer("\n".join(lines))
 
 

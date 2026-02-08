@@ -54,12 +54,13 @@ async def eventlog_loop(
     no_item_streak = 0
 
     while not stop_event.is_set():
-        # Allow live updates of last_event_id via state store (e.g. /last_eventlog_id set <id>).
+        # Allow live overrides of last_event_id via state store (e.g. /last_eventlog_id set <id>).
         stored_last_id = _load_last_event_id(store)
-        if stored_last_id is not None and stored_last_id > last_event_id:
-            logger.info("eventlog live update: last_event_id %s -> %s", last_event_id, stored_last_id)
+        if stored_last_id is not None and stored_last_id > 0 and stored_last_id != last_event_id:
+            logger.info("eventlog live override: last_event_id %s -> %s", last_event_id, stored_last_id)
             last_event_id = stored_last_id
             timer = 0
+            no_item_streak = 0
 
         next_id = last_event_id + 1
         logger.debug("eventlog poll: next_id=%s", next_id)
