@@ -9,7 +9,18 @@ import os
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
-from sqlalchemy import Column, DateTime, Integer, Text, create_engine
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    create_engine,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -32,6 +43,98 @@ class BotConfigHistory(Base):
     config_json = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     comment = Column(Text, nullable=True)
+
+
+# ============================================================================
+# Platform Migration Models (Telegram + Mattermost support)
+# ============================================================================
+
+
+class PlatformUser(Base):
+    """Unified user table supporting both Telegram and Mattermost"""
+
+    __tablename__ = "platform_users"
+
+    id = Column(Integer, primary_key=True)
+
+    # Platform identifiers (at least one must be present)
+    telegram_id = Column(BigInteger, nullable=True, unique=True, index=True)
+    mattermost_user_id = Column(String(255), nullable=True, unique=True, index=True)
+    mattermost_username = Column(String(255), nullable=True)
+
+    # Basic info
+    role = Column(String(50), nullable=False, default="user", index=True)  # 'admin' or 'user'
+    username = Column(String(255), nullable=True)
+    full_name = Column(String(255), nullable=True)
+    phone = Column(String(20), nullable=True)
+
+    # Last command tracking
+    last_command = Column(String(255), nullable=True)
+    last_command_at = Column(DateTime, nullable=True)
+
+    # Telegram lifecycle
+    tg_added_at = Column(DateTime, nullable=True)
+    tg_disabled_at = Column(DateTime, nullable=True)
+
+    # Mattermost lifecycle
+    mm_added_at = Column(DateTime, nullable=True)
+    mm_disabled_at = Column(DateTime, nullable=True)
+
+    # Synchronization tracking
+    sync_status = Column(String(50), nullable=False, default="pending", index=True)  # 'pending', 'synced', 'failed'
+    sync_error = Column(Text, nullable=True)
+    last_sync_at = Column(DateTime, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PlatformDestination(Base):
+    """Routing destinations for notifications (Telegram chats/threads + Mattermost channels)"""
+
+    __tablename__ = "platform_destinations"
+
+    id = Column(Integer, primary_key=True)
+
+    # Destination name/identifier
+    name = Column(String(255), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+
+    # Telegram routing
+    tg_chat_id = Column(BigInteger, nullable=True, index=True)
+    tg_thread_id = Column(Integer, nullable=True)
+
+    # Mattermost routing
+    mm_channel_id = Column(String(255), nullable=True, index=True)
+    mm_channel_name = Column(String(255), nullable=True)
+    mm_post_parent_id = Column(String(255), nullable=True)  # For threading
+
+    # Lifecycle
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PlatformSyncLog(Base):
+    """Audit log for platform synchronization events"""
+
+    __tablename__ = "platform_sync_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # User being synchronized
+    user_id = Column(Integer, ForeignKey("platform_users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # What happened
+    platform = Column(String(50), nullable=False, index=True)  # 'telegram', 'mattermost', 'system'
+    action = Column(String(50), nullable=False, index=True)  # 'create', 'update', 'delete', 'disable', 'enable', 'link', 'unlink'
+
+    # Details (JSON for flexibility)
+    details = Column(JSON, nullable=False, default=dict)
+
+    # Timestamp
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
 def _database_url() -> str:

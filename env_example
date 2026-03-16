@@ -213,3 +213,68 @@ OBS_ROLLBACK_ALERT_MIN_INTERVAL_S=300
 # -----------------------------
 # URL для интеграционных тестов.
 WEB_TEST_URL=http://localhost:8000
+
+# ============================================================================
+# MATTERMOST INTEGRATION (новое)
+# Параметры для интеграции с Mattermost наряду с Telegram.
+# ============================================================================
+
+# ----------------------------
+# Mattermost Platform Settings
+# ----------------------------
+# Включить Telegram бота (1/0, по умолчанию 1).
+# Если 0 — бот не подключится к Telegram при запуске.
+TG_ENABLED=1
+
+# Включить Mattermost бота (1/0, по умолчанию 0).
+# Если 1 — бот подключится к Mattermost при запуске.
+MATTERMOST_ENABLED=0
+
+# Режим параллельной работы обеих платформ (1/0, по умолчанию 0).
+# Если 1 — все уведомления идут и в Telegram, и в Mattermost одновременно.
+# Полезно для миграции и тестирования.
+DUAL_MODE_ENABLED=0
+
+# Платформа по умолчанию (telegram/mattermost, по умолчанию telegram).
+# Используется при обработке команд от пользователей, выбравших обе платформы.
+DEFAULT_PLATFORM=telegram
+
+# ----------------------------
+# Mattermost API Configuration
+# ----------------------------
+# Полный URL Mattermost сервера (например, https://mattermost.example.com).
+# Это необходимо для всех REST API вызовов.
+MATTERMOST_API_URL=https://mattermost.example.com
+
+# Personal Access Token бота в Mattermost.
+# 1. Создайте бота в Системной консоли (Admin → Integrations → Bot Accounts)
+# 2. Выдайте ему нужные разрешения (создание постов, отправка сообщений)
+# 3. Создайте Personal Access Token для этого бота
+# Это поле ОБЯЗАТЕЛЬНО при MATTERMOST_ENABLED=1.
+MATTERMOST_BOT_TOKEN=__REPLACE_ME__
+
+# Webhook secret для валидации входящих webhooks от Mattermost.
+# Используется при получении уведомлений от ServiceDesk через Mattermost.
+# Можно оставить пусто если не используются webhook'и.
+MATTERMOST_WEBHOOK_SECRET=__OPTIONAL__
+
+# ============================================================================
+# ПРИМЕЧАНИЯ:
+# ============================================================================
+# 1. ФАЗА 1 (текущий момент): TG_ENABLED=1, MATTERMOST_ENABLED=0
+#    - Система работает только в Telegram режиме (как раньше)
+#
+# 2. ФАЗА 2 (после разработки и тестирования):
+#    TG_ENABLED=1, MATTERMOST_ENABLED=1, DUAL_MODE_ENABLED=1
+#    - Обе платформы работают параллельно
+#    - Все уведомления отправляются в обе платформы
+#    - Команды можно выполнять из обеих платформ
+#
+# 3. ФАЗА 3 (после долгого тестирования на staging):
+#    TG_ENABLED=0, MATTERMOST_ENABLED=1, DEFAULT_PLATFORM=mattermost
+#    - Telegram отключен полностью
+#    - Система работает только с Mattermost
+#
+# 4. ФАЗА 4 (через месяц на production):
+#    - Удалить Telegram код из репозитория
+#    - Оставить только Mattermost интеграцию
