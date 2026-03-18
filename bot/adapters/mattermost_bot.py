@@ -20,8 +20,9 @@ from typing import Any, Callable, Dict, Optional
 
 try:
     from mattermostdriver import Client
-except ImportError:
-    raise ImportError("Install mattermostdriver: pip install mattermostdriver")
+except ImportError as e:
+    Client = None  # type: ignore
+    _import_error = e
 
 from bot.adapters.base import UserIdentity
 
@@ -52,6 +53,9 @@ class MattermostBotAdapter:
             on_command: callback функция для обработки команд
                        signature: async on_command(command: str, text: str, user_id: str, channel_id: str, post_id: str)
         """
+        if Client is None:
+            raise ImportError("Install mattermostdriver: pip install mattermostdriver")
+
         self.server_url = server_url
         self.bot_token = bot_token
         self.logger = logger

@@ -19,7 +19,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.adapters.base import UserIdentity
 from bot.adapters.mattermost import MattermostMessageAdapter, MattermostStateManager
-from bot.adapters.mattermost_bot import MattermostBotAdapter
 from bot.adapters.telegram import TelegramMessageAdapter, TelegramStateManager
 from bot.config.settings import BotSettings
 from bot.handlers import commands, errors
@@ -302,6 +301,9 @@ async def main() -> None:
 
     if settings.mattermost_enabled and settings.mattermost_bot_token:
         logger.info("Initializing Mattermost Bot (WebSocket)...")
+
+        # Import MattermostBotAdapter only if Mattermost is enabled
+        from bot.adapters.mattermost_bot import MattermostBotAdapter
 
         async def handle_mattermost_command(
             command: str,
