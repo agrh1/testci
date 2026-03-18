@@ -115,6 +115,7 @@ class BotSettings:
     mattermost_api_url: str = ""
     mattermost_bot_token: str = ""
     mattermost_webhook_secret: str = ""
+    mattermost_startup_channel_id: str = "town-square"
     tg_enabled: bool = True
     mattermost_enabled: bool = False
     dual_mode_enabled: bool = False
@@ -182,6 +183,7 @@ class BotSettings:
         mattermost_api_url = get_env("MATTERMOST_API_URL", "").strip()
         mattermost_bot_token = get_env("MATTERMOST_BOT_TOKEN", "").strip()
         mattermost_webhook_secret = get_env("MATTERMOST_WEBHOOK_SECRET", "").strip()
+        mattermost_startup_channel_id = get_env("MATTERMOST_STARTUP_CHANNEL_ID", "town-square").strip()
         tg_enabled = get_env("TG_ENABLED", "1").strip().lower() in ("1", "true", "yes")
         mattermost_enabled = get_env("MATTERMOST_ENABLED", "0").strip().lower() in ("1", "true", "yes")
         dual_mode_enabled = get_env("DUAL_MODE_ENABLED", "0").strip().lower() in ("1", "true", "yes")
@@ -230,6 +232,7 @@ class BotSettings:
             mattermost_api_url=mattermost_api_url,
             mattermost_bot_token=mattermost_bot_token,
             mattermost_webhook_secret=mattermost_webhook_secret,
+            mattermost_startup_channel_id=mattermost_startup_channel_id,
             tg_enabled=tg_enabled,
             mattermost_enabled=mattermost_enabled,
             dual_mode_enabled=dual_mode_enabled,

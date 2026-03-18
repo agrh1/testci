@@ -29,7 +29,7 @@ def test_parse_rules_skips_invalid_and_empty_rules() -> None:
         ]
     )
     assert len(rules) == 1
-    assert rules[0].dest == Destination(chat_id=2, thread_id=None)
+    assert rules[0].dest == Destination(platform="telegram", chat_id=2, thread_id=None)
 
 
 def test_match_destinations_keywords_and_ids() -> None:
@@ -48,8 +48,8 @@ def test_match_destinations_keywords_and_ids() -> None:
         creator_id_field="CreatorId",
         creator_company_id_field="CreatorCompanyId",
     )
-    assert Destination(chat_id=10, thread_id=None) in matched
-    assert Destination(chat_id=20, thread_id=None) in matched
+    assert Destination(platform="telegram", chat_id=10, thread_id=None) in matched
+    assert Destination(platform="telegram", chat_id=20, thread_id=None) in matched
 
 
 def test_explain_matches_contains_reason() -> None:
@@ -87,5 +87,5 @@ def test_match_destinations_creator_fields() -> None:
         creator_id_field="CreatorId",
         creator_company_id_field="CreatorCompanyId",
     )
-    assert Destination(chat_id=30, thread_id=None) in matched
-    assert Destination(chat_id=40, thread_id=None) in matched
+    assert Destination(platform="telegram", chat_id=30, thread_id=None) in matched
+    assert Destination(platform="telegram", chat_id=40, thread_id=None) in matched

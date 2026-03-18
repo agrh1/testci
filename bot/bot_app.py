@@ -17,8 +17,13 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from bot.adapters.base import UserIdentity
+from bot.adapters.mattermost import MattermostMessageAdapter, MattermostStateManager
+from bot.adapters.mattermost_bot import MattermostBotAdapter
+from bot.adapters.telegram import TelegramMessageAdapter, TelegramStateManager
 from bot.config.settings import BotSettings
 from bot.handlers import commands, errors
+from bot.services.command_executor import CommandExecutor, CommandRequest
 from bot.services.config_sync import ConfigSyncService
 from bot.services.eventlog_filter_store import EventlogFilterStore
 from bot.services.eventlog_worker import eventlog_loop
@@ -146,6 +151,116 @@ async def main() -> None:
     dp.errors.register(errors.on_error)
     commands.register_handlers(dp)
 
+    # ========================================================================
+    # PHASE 2: Initialize message adapters (Telegram + Mattermost support)
+    # ========================================================================
+
+    adapters = {}
+    state_managers = {}
+
+    # Always initialize Telegram adapter (PHASE 1 & 2 & 3)
+    if settings.tg_enabled:
+        telegram_adapter = TelegramMessageAdapter(bot=bot, logger=logger)
+        adapters["telegram"] = telegram_adapter
+        state_managers["telegram"] = TelegramStateManager(store=state_store, logger=logger)
+        logger.info("Telegram adapter initialized")
+
+    # Initialize Mattermost adapter if enabled (PHASE 2 & 3)
+    if settings.mattermost_enabled:
+        import aiohttp
+
+        mattermost_session = aiohttp.ClientSession()
+        mattermost_adapter = MattermostMessageAdapter(
+            api_url=settings.mattermost_api_url,
+            bot_token=settings.mattermost_bot_token,
+            session=mattermost_session,
+            logger=logger,
+        )
+        adapters["mattermost"] = mattermost_adapter
+        state_managers["mattermost"] = MattermostStateManager(store=state_store, logger=logger)
+        logger.info("Mattermost adapter initialized: %s", settings.mattermost_api_url)
+
+    # Create unified command executor with all active adapters
+    command_executor = CommandExecutor(
+        adapters=adapters,
+        state_managers=state_managers,
+        db=user_store,  # for admin checks and history
+        logger=logger,
+    )
+    dp.workflow_data["command_executor"] = command_executor
+    dp.workflow_data["adapters"] = adapters
+
+    # ========================================================================
+    # Register command handlers and dependencies (Phase 3a: notification tests)
+    # ========================================================================
+
+    # Import command implementations
+    from bot.handlers.command_implementations import (
+        cmd_admin_add,
+        cmd_config,
+        cmd_config_diff,
+        cmd_escalation_send_test,
+        cmd_eventlog_poll,
+        cmd_help_mattermost,
+        cmd_last_eventlog_id,
+        cmd_routes_debug,
+        cmd_routes_send_test,
+        cmd_routes_test,
+        cmd_service_icon_add,
+        cmd_service_icons,
+        cmd_user_add,
+        cmd_user_audit,
+        cmd_user_history,
+        cmd_user_list,
+        cmd_user_remove,
+    )
+
+    # Set service dependencies that commands need
+    command_executor.set_dependencies({
+        "config_sync": config_sync,
+        "runtime_config": runtime_config,
+        "notification_service": None,  # Will be set after NotificationService is created
+        "user_store": user_store,  # For user management commands
+        "web_client": web_client,  # For config commands
+        "config_admin_token": settings.config_admin_token,
+        "state_store": state_store,  # For eventlog commands
+        "eventlog_filter_store": eventlog_filter_store,
+        "eventlog_login": settings.eventlog_login,
+        "eventlog_password": settings.eventlog_password,
+        "eventlog_base_url": settings.eventlog_base_url,
+        "eventlog_start_id": settings.eventlog_start_id,
+        "service_icon_store": service_icon_store,
+    })
+
+    # Register Phase 3a: Notification-testing commands
+    command_executor.register_handler("routes_test", cmd_routes_test)
+    command_executor.register_handler("routes_debug", cmd_routes_debug)
+    command_executor.register_handler("routes_send_test", cmd_routes_send_test)
+    command_executor.register_handler("escalation_send_test", cmd_escalation_send_test)
+
+    # Register Phase 3b: User management commands
+    command_executor.register_handler("user_add", cmd_user_add)
+    command_executor.register_handler("user_remove", cmd_user_remove)
+    command_executor.register_handler("admin_add", cmd_admin_add)
+    command_executor.register_handler("user_list", cmd_user_list)
+    command_executor.register_handler("user_history", cmd_user_history)
+    command_executor.register_handler("user_audit", cmd_user_audit)
+
+    # Register Phase 3c: Config/Admin commands
+    command_executor.register_handler("config", cmd_config)
+    command_executor.register_handler("config_diff", cmd_config_diff)
+    command_executor.register_handler("last_eventlog_id", cmd_last_eventlog_id)
+    command_executor.register_handler("eventlog_poll", cmd_eventlog_poll)
+    command_executor.register_handler("service_icons", cmd_service_icons)
+    command_executor.register_handler("service_icon_add", cmd_service_icon_add)
+
+    # Register Mattermost-specific commands
+    command_executor.register_handler("help_mattermost", cmd_help_mattermost)
+
+    # ========================================================================
+    # Observability service (unchanged)
+    # ========================================================================
+
     observability = ObservabilityService(
         bot=bot,
         polling_state=polling_state,
@@ -160,8 +275,13 @@ async def main() -> None:
         rollback_alert_min_interval_s=settings.obs_rollback_alert_min_interval_s,
     )
 
+    # ========================================================================
+    # Notification service - now with adapter support
+    # ========================================================================
+
     notify_service = NotificationService(
-        bot=bot,
+        adapters=adapters,  # NEW: pass adapters instead of bot
+        bot=bot,  # KEEP for backward compatibility, but will be deprecated
         runtime_config=runtime_config,
         polling_state=polling_state,
         config_sync=config_sync,
@@ -169,6 +289,114 @@ async def main() -> None:
         observability=observability,
     )
     dp.workflow_data["notify_eventlog"] = notify_service.notify_eventlog
+
+    # Update command executor with notification_service dependency (now that it's created)
+    command_executor.set_dependency("notification_service", notify_service)
+
+    # ========================================================================
+    # PHASE 2+: Mattermost Bot initialization (WebSocket-based)
+    # ========================================================================
+
+    mattermost_bot = None
+    mattermost_bot_task = None
+
+    if settings.mattermost_enabled and settings.mattermost_bot_token:
+        logger.info("Initializing Mattermost Bot (WebSocket)...")
+
+        async def handle_mattermost_command(
+            command: str,
+            text: str,
+            user_id: str,
+            channel_id: str,
+            post_id: str,
+        ) -> None:
+            """
+            Обработка команд из Mattermost.
+
+            Вызывается из WebSocket listener для каждой новой команды.
+            """
+            try:
+                # Получить информацию о пользователе
+                user_info = await mattermost_bot.get_user_info(user_id)
+                if not user_info:
+                    logger.warning(f"Could not get user info for {user_id}")
+                    return
+
+                # Создать CommandRequest
+                request = CommandRequest(
+                    user=UserIdentity(
+                        user_id=user_id,
+                        platform="mattermost",
+                        username=user_info.get("username", ""),
+                    ),
+                    command=command,
+                    raw_text=text,
+                    is_admin=True,  # TODO: проверить роль в БД через user_store
+                )
+
+                # Выполнить команду
+                response = await command_executor.execute(request)
+
+                # Отправить ответ в канал
+                if response and response.text:
+                    await mattermost_bot.send_notification(
+                        destination_id=channel_id,
+                        text=response.text,
+                        thread_id=post_id,  # Ответить в ветку
+                    )
+
+            except Exception as e:
+                logger.error(f"Error handling Mattermost command: {e}", exc_info=True)
+                # Отправить ошибку в канал
+                with contextlib.suppress(Exception):
+                    await mattermost_bot.send_notification(
+                        destination_id=channel_id,
+                        text=f"❌ Error: {str(e)}",
+                        thread_id=post_id,
+                    )
+
+        mattermost_bot = MattermostBotAdapter(
+            server_url=settings.mattermost_api_url.rstrip('/api/v4').rstrip('/'),
+            bot_token=settings.mattermost_bot_token,
+            logger=logger,
+            on_command=handle_mattermost_command,
+        )
+
+        # Запустить бота в отдельной задаче
+        async def run_mattermost_bot() -> None:
+            """Запустить Mattermost бота и слушать WebSocket."""
+            try:
+                await mattermost_bot.start()
+
+                # Отправить стартовое сообщение в канал team-town-square (по умолчанию)
+                # или в сообщение к администратору
+                await asyncio.sleep(2)  # Дать время на подключение
+
+                startup_message = (
+                    "🟢 **I'm alive!**\n\n"
+                    "ServiceBot запущен и слушает команды.\n\n"
+                    "Введите `/help_mattermost` чтобы увидеть список всех команд."
+                )
+
+                # Попробовать отправить в town-square (основной канал)
+                with contextlib.suppress(Exception):
+                    await mattermost_bot.send_notification(
+                        destination_id=settings.mattermost_startup_channel_id or "town-square",
+                        text=startup_message,
+                    )
+
+                logger.info("✓ Mattermost Bot is running")
+
+                # Слушаем WebSocket (это блокирующая операция)
+                # Она будет запущена в background, если мы вернёмся из start()
+
+            except Exception as e:
+                logger.error(f"Mattermost bot error: {e}", exc_info=True)
+
+        mattermost_bot_task = asyncio.create_task(run_mattermost_bot(), name="mattermost_bot")
+    else:
+        if settings.mattermost_enabled:
+            logger.warning("Mattermost enabled but MATTERMOST_BOT_TOKEN not set")
 
     polling_task = asyncio.create_task(
         polling_open_queue_loop(
@@ -254,6 +482,8 @@ async def main() -> None:
         if eventlog_task is not None:
             eventlog_task.cancel()
         getlink_task.cancel()
+        if mattermost_bot_task is not None:
+            mattermost_bot_task.cancel()
         try:
             await polling_task
         except asyncio.CancelledError:
@@ -272,6 +502,13 @@ async def main() -> None:
             await getlink_task
         except asyncio.CancelledError:
             pass
+        if mattermost_bot_task is not None:
+            try:
+                await mattermost_bot_task
+            except asyncio.CancelledError:
+                pass
+        if mattermost_bot is not None:
+            await mattermost_bot.stop()
 
 
 if __name__ == "__main__":

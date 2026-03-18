@@ -2,12 +2,13 @@
 
 
 """
-Маршрутизация уведомлений (шаг 25) с поддержкой thread_id и debug-объяснением.
+Маршрутизация уведомлений с поддержкой Telegram и Mattermost платформ.
 
 Зачем нужен этот модуль
 -----------------------
-- Отправлять уведомления не только в разные чаты, но и в разные thread'ы (темы) внутри чата.
-- Гибко маршрутизировать по признакам заявок.
+- Отправлять уведомления в разные Telegram чаты/темы и Mattermost каналы.
+- Гибко маршрутизировать по признакам заявок (service_id, customer_id, keywords).
+- Поддерживать dual-mode (одновременно на обе платформы).
 - Давать понятное объяснение, какое правило сработало и почему (для /routes_debug).
 
 MVP критерии совпадения
@@ -21,16 +22,33 @@ MVP критерии совпадения
 
 Если ни одно правило не сработало — используем default destination.
 
-Формат ROUTES_RULES (JSON):
+Формат ROUTES_RULES (JSON) - ФАЗА 1 (Telegram только):
 [
   {
     "name": "VIP routing",
-    "dest": {"chat_id": -100111, "thread_id": 10},
+    "dest": {"chat_id": -100111, "thread_id": 10, "platform": "telegram"},
     "keywords": ["VIP", "P1"],
-    "service_ids": [101, 102],
-    "customer_ids": [5001],
-    "creator_ids": [7001],
-    "creator_company_ids": [9001]
+    "service_ids": [101, 102]
+  }
+]
+
+Формат ROUTES_RULES (JSON) - ФАЗА 2 (обе платформы):
+[
+  {
+    "name": "VIP routing",
+    "dest": {
+      "platform": "telegram",
+      "chat_id": -100111,
+      "thread_id": 10
+    }
+  },
+  {
+    "name": "VIP routing MM",
+    "dest": {
+      "platform": "mattermost",
+      "destination_id": "channel_id_here",
+      "thread_id": null
+    }
   }
 ]
 """
@@ -42,9 +60,26 @@ from typing import Any, Optional, Sequence
 
 @dataclass(frozen=True)
 class Destination:
-    """Куда отправлять сообщение в Telegram."""
-    chat_id: int
-    thread_id: Optional[int] = None
+    """
+    Куда отправлять сообщение (поддержка Telegram и Mattermost).
+
+    Для Telegram:
+      - platform: "telegram"
+      - chat_id: Telegram chat ID (обязательно)
+      - thread_id: Optional[int] - Telegram topic ID (опционально)
+      - destination_id: не используется (пусто)
+
+    Для Mattermost:
+      - platform: "mattermost"
+      - destination_id: Mattermost channel ID (обязательно)
+      - thread_id: Optional[str] - Mattermost post parent ID для threading (опционально)
+      - chat_id: не используется (пусто)
+    """
+
+    platform: str  # "telegram" или "mattermost"
+    chat_id: int = 0  # Для Telegram (может быть 0 для MM)
+    destination_id: str = ""  # Для Mattermost (channel_id)
+    thread_id: Optional[int] = None  # Для обеих платформ (message_thread_id для TG, root_id для MM)
 
 
 @dataclass(frozen=True)
@@ -74,25 +109,60 @@ def _to_int(x: Any) -> Optional[int]:
 
 def parse_destination(raw: Any) -> Optional[Destination]:
     """
-    raw ожидается dict: {"chat_id": ..., "thread_id": ...?}
-    thread_id:
-      - None / отсутствует => основная лента чата (без треда)
-      - >0 => конкретный thread
-      - 0 => НЕ используем (невалидная "заглушка")
+    Парсит destination из JSON.
+
+    Поддерживает обе платформы:
+    - Telegram: {"platform": "telegram", "chat_id": -100111, "thread_id": 10}
+    - Mattermost: {"platform": "mattermost", "destination_id": "channel123", "thread_id": null}
+
+    Для backward compatibility, если нет platform field, считаем что это Telegram:
+    - {"chat_id": -100111, "thread_id": 10} -> Telegram по умолчанию
+
+    Args:
+        raw: dict с полями destination
+
+    Returns:
+        Destination или None если некорректный формат
     """
     if not isinstance(raw, dict):
         return None
 
-    chat_id = _to_int(raw.get("chat_id"))
-    if chat_id is None:
+    # Определить платформу
+    platform = raw.get("platform", "telegram").strip().lower()
+    if platform not in ("telegram", "mattermost"):
         return None
 
-    thread_id = _to_int(raw.get("thread_id"))
-    if thread_id == 0:
-        # считаем 0 невалидным; лучше убрать поле совсем
-        thread_id = None
+    # Telegram: требует chat_id
+    if platform == "telegram":
+        chat_id = _to_int(raw.get("chat_id"))
+        if chat_id is None:
+            return None
+        thread_id = _to_int(raw.get("thread_id"))
+        if thread_id == 0:
+            thread_id = None
+        return Destination(
+            platform="telegram",
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
 
-    return Destination(chat_id=chat_id, thread_id=thread_id)
+    # Mattermost: требует destination_id (channel_id)
+    if platform == "mattermost":
+        destination_id = raw.get("destination_id", "").strip()
+        if not destination_id:
+            return None
+        thread_id = raw.get("thread_id")
+        if isinstance(thread_id, str):
+            thread_id = thread_id.strip() or None
+        else:
+            thread_id = None
+        return Destination(
+            platform="mattermost",
+            destination_id=destination_id,
+            thread_id=thread_id,
+        )
+
+    return None
 
 
 def parse_rules(raw: Any) -> list[RouteRule]:
@@ -283,7 +353,12 @@ def explain_matches(
         out.append(
             {
                 "index": idx,
-                "dest": {"chat_id": r.dest.chat_id, "thread_id": r.dest.thread_id},
+                "dest": {
+                    "platform": r.dest.platform,
+                    "chat_id": r.dest.chat_id if r.dest.platform == "telegram" else None,
+                    "destination_id": r.dest.destination_id if r.dest.platform == "mattermost" else None,
+                    "thread_id": r.dest.thread_id,
+                },
                 "name": r.name,
                 "matched": reason is not None,
                 "reason": reason,
@@ -313,6 +388,11 @@ def pick_destinations(
     Итоговый список destinations:
     - если сработали правила: возвращаем их (стабильно отсортировано)
     - если нет: default_dest (если задан)
+
+    Сортировка для детерминированности:
+      1. По платформе (mattermost < telegram)
+      2. По destination_id / chat_id
+      3. По thread_id
     """
     matched = match_destinations(
         items=items,
@@ -323,7 +403,11 @@ def pick_destinations(
         creator_company_id_field=creator_company_id_field,
     )
     if matched:
-        return sorted(matched, key=lambda d: (d.chat_id, d.thread_id or 0))
+        # Сортировка: сначала по платформе, потом по destination
+        return sorted(
+            matched,
+            key=lambda d: (d.platform, d.destination_id or "", d.chat_id, d.thread_id or 0),
+        )
 
     if default_dest is None:
         return []

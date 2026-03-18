@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_platform_sync_log_user_id ON platform_sync_log(us
 CREATE INDEX IF NOT EXISTS idx_platform_sync_log_platform ON platform_sync_log(platform);
 CREATE INDEX IF NOT EXISTS idx_platform_sync_log_action ON platform_sync_log(action);
 CREATE INDEX IF NOT EXISTS idx_platform_sync_log_created_at ON platform_sync_log(created_at);
-CREATE INDEX IF NOT EXISTS idx_platform_sync_log_user_created ON platform_sync_log(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_platform_sync_log_user_created ON platform_sync_log(user_id, created_at);
 
 
 -- ============================================================================

@@ -27,7 +27,7 @@ def test_match_escalation_filter_creator_fields() -> None:
 
 
 def test_escalation_manager_rules_match() -> None:
-    rule = EscalationRule(dest=Destination(chat_id=10), after_s=0, flt=EscalationFilter(service_ids=(101,)))
+    rule = EscalationRule(dest=Destination(platform="telegram", chat_id=10), after_s=0, flt=EscalationFilter(service_ids=(101,)))
     manager = EscalationManager(
         store=None,
         store_key="test",
