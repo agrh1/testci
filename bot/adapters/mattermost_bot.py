@@ -154,12 +154,11 @@ class MattermostBotAdapter:
                 if self._is_running:
                     await self._listen_websocket()
 
-    def _handle_websocket_message(self, msg) -> None:
+    async def _handle_websocket_message(self, msg) -> None:
         """
         Обработать сообщение от Mattermost WebSocket.
 
-        Вызывается синхронно из mattermostdriver, поэтому мы должны запланировать
-        async задачу в event loop.
+        mattermostdriver ожидает async callback (await-ит результат).
         msg может приходить как dict или как JSON-строка (зависит от версии драйвера).
         """
         try:
@@ -200,18 +199,29 @@ class MattermostBotAdapter:
                 f"Received command from {user_id}: /{command} in {channel_id}"
             )
 
-            # Запланировать обработку команды в event loop (thread-safe)
-            if self.on_command and self._loop:
-                asyncio.run_coroutine_threadsafe(
-                    self.on_command(
+            # Вызвать обработку команды
+            if self.on_command:
+                if self._loop and self._loop.is_running():
+                    # Запланировать в основном event loop (thread-safe)
+                    asyncio.run_coroutine_threadsafe(
+                        self.on_command(
+                            command=command,
+                            text=raw_text,
+                            user_id=user_id,
+                            channel_id=channel_id,
+                            post_id=post_id,
+                        ),
+                        self._loop,
+                    )
+                else:
+                    # Если мы уже в event loop (async контекст)
+                    await self.on_command(
                         command=command,
                         text=raw_text,
                         user_id=user_id,
                         channel_id=channel_id,
                         post_id=post_id,
-                    ),
-                    self._loop,
-                )
+                    )
 
         except Exception as e:
             self.logger.error(
