@@ -134,7 +134,17 @@ class MattermostBotAdapter:
         """
         try:
             # Подключиться к WebSocket (синхронный вызов, поэтому в отдельном потоке)
-            await asyncio.to_thread(self.driver.init_websocket, self._handle_websocket_message)
+            # mattermostdriver внутри вызывает asyncio.get_event_loop(),
+            # поэтому нужно создать event loop в рабочем потоке
+            def _run_ws():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    self.driver.init_websocket(self._handle_websocket_message)
+                finally:
+                    loop.close()
+
+            await asyncio.to_thread(_run_ws)
         except Exception as e:
             self.logger.error(f"❌ WebSocket error: {e}", exc_info=True)
             if self._is_running:
