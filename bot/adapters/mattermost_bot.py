@@ -20,9 +20,9 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 try:
-    from mattermostdriver import Client
+    from mattermostdriver import Driver
 except ImportError as e:
-    Client = None  # type: ignore
+    Driver = None  # type: ignore
     _import_error = e
 
 from bot.adapters.base import UserIdentity
@@ -54,7 +54,7 @@ class MattermostBotAdapter:
             on_command: callback функция для обработки команд
                        signature: async on_command(command: str, text: str, user_id: str, channel_id: str, post_id: str)
         """
-        if Client is None:
+        if Driver is None:
             raise ImportError("Install mattermostdriver: pip install mattermostdriver")
 
         self.server_url = server_url
@@ -69,20 +69,20 @@ class MattermostBotAdapter:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         scheme = parsed.scheme or "https"
 
-        self.client = Client(
-            options={
-                "host": host,
-                "port": port,
-                "scheme": scheme,
-                "basepath": "/api/v4",
-            },
-            token=bot_token,
-        )
+        self.driver = Driver(options={
+            "url": host,
+            "port": port,
+            "scheme": scheme,
+            "basepath": "/api/v4",
+            "token": bot_token,
+            "verify": True,
+        })
 
         # WebSocket listener будет запущен в отдельной корутине
         self._ws_task: Optional[asyncio.Task] = None
         self._is_running = False
         self._bot_user_id: Optional[str] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def start(self) -> None:
         """Запустить бота (подключиться к WebSocket и слушать)."""
@@ -91,8 +91,14 @@ class MattermostBotAdapter:
             return
 
         try:
+            # Захватить event loop для thread-safe вызовов из WebSocket callback
+            self._loop = asyncio.get_running_loop()
+
+            # Авторизоваться (устанавливает token на HTTP-клиент)
+            await asyncio.to_thread(self.driver.login)
+
             # Получить информацию о самом боте
-            me = self.client.users.get_user(user_id='me')
+            me = await asyncio.to_thread(self.driver.users.get_user, 'me')
             self._bot_user_id = me['id']
             self.logger.info(f"✓ Mattermost bot connected: {me['username']} (id={self._bot_user_id})")
 
@@ -128,7 +134,7 @@ class MattermostBotAdapter:
         """
         try:
             # Подключиться к WebSocket (синхронный вызов, поэтому в отдельном потоке)
-            await asyncio.to_thread(self.client.init_websocket, self._handle_websocket_message)
+            await asyncio.to_thread(self.driver.init_websocket, self._handle_websocket_message)
         except Exception as e:
             self.logger.error(f"❌ WebSocket error: {e}", exc_info=True)
             if self._is_running:
@@ -181,16 +187,17 @@ class MattermostBotAdapter:
                 f"Received command from {user_id}: /{command} in {channel_id}"
             )
 
-            # Запланировать обработку команды в event loop
-            if self.on_command:
-                asyncio.create_task(
+            # Запланировать обработку команды в event loop (thread-safe)
+            if self.on_command and self._loop:
+                asyncio.run_coroutine_threadsafe(
                     self.on_command(
                         command=command,
                         text=raw_text,
                         user_id=user_id,
                         channel_id=channel_id,
                         post_id=post_id,
-                    )
+                    ),
+                    self._loop,
                 )
 
         except Exception as e:
@@ -226,7 +233,7 @@ class MattermostBotAdapter:
                 post_data['root_id'] = thread_id
 
             result = await asyncio.to_thread(
-                self.client.posts.create_post,
+                self.driver.posts.create_post,
                 post_data
             )
             msg_id = result.get('id')
@@ -257,7 +264,7 @@ class MattermostBotAdapter:
         try:
             # Создать DM канал с пользователем
             dm_channel = await asyncio.to_thread(
-                self.client.channels.create_direct_message_channel,
+                self.driver.channels.create_direct_message_channel,
                 [user.user_id]
             )
             channel_id = dm_channel['id']
@@ -284,7 +291,7 @@ class MattermostBotAdapter:
         """
         try:
             user = await asyncio.to_thread(
-                self.client.users.get_user,
+                self.driver.users.get_user,
                 user_id
             )
             return user
@@ -296,7 +303,7 @@ class MattermostBotAdapter:
         """Получить информацию о канале."""
         try:
             channel = await asyncio.to_thread(
-                self.client.channels.get_channel,
+                self.driver.channels.get_channel,
                 channel_id
             )
             return channel

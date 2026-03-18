@@ -358,7 +358,7 @@ async def main() -> None:
                     )
 
         mattermost_bot = MattermostBotAdapter(
-            server_url=settings.mattermost_api_url.rstrip('/api/v4').rstrip('/'),
+            server_url=settings.mattermost_api_url.removesuffix('/api/v4').rstrip('/'),
             bot_token=settings.mattermost_bot_token,
             logger=logger,
             on_command=handle_mattermost_command,
