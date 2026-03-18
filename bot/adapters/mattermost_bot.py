@@ -82,6 +82,7 @@ class MattermostBotAdapter:
         self._ws_task: Optional[asyncio.Task] = None
         self._is_running = False
         self._bot_user_id: Optional[str] = None
+        self._bot_username: Optional[str] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def start(self) -> None:
@@ -100,7 +101,8 @@ class MattermostBotAdapter:
             # Получить информацию о самом боте
             me = await asyncio.to_thread(self.driver.users.get_user, 'me')
             self._bot_user_id = me['id']
-            self.logger.info(f"✓ Mattermost bot connected: {me['username']} (id={self._bot_user_id})")
+            self._bot_username = me['username']
+            self.logger.info(f"✓ Mattermost bot connected: {self._bot_username} (id={self._bot_user_id})")
 
             self._is_running = True
 
@@ -201,17 +203,35 @@ class MattermostBotAdapter:
             if user_id == self._bot_user_id:
                 return
 
-            # Проверить, это команда?
-            if not message.startswith('/'):
-                return
-
-            # Парсим команду
-            parts = message.split(maxsplit=1)
-            command = parts[0].lstrip('/')
+            # Парсим команду: поддерживаем два формата:
+            #   1) @botname command args...
+            #   2) /command args...  (legacy)
+            command: Optional[str] = None
             raw_text = message
 
+            mention = f"@{self._bot_username}" if self._bot_username else None
+
+            if mention and message.lower().startswith(mention.lower()):
+                # @sdbot help_mattermost → command="help_mattermost"
+                after_mention = message[len(mention):].strip()
+                if not after_mention:
+                    # Просто @sdbot без команды — показать help
+                    command = "help_mattermost"
+                else:
+                    parts = after_mention.split(maxsplit=1)
+                    command = parts[0].lstrip('/')
+            elif message.startswith('/'):
+                # Legacy: /command
+                parts = message.split(maxsplit=1)
+                command = parts[0].lstrip('/')
+            else:
+                return
+
+            if not command:
+                return
+
             self.logger.debug(
-                f"Received command from {user_id}: /{command} in {channel_id}"
+                f"Received command from {user_id}: {command} in {channel_id}"
             )
 
             # Вызвать обработку команды

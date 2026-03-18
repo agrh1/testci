@@ -324,6 +324,16 @@ async def main() -> None:
                     logger.warning(f"Could not get user info for {user_id}")
                     return
 
+                # Проверить роль пользователя в БД
+                role = await user_store.get_role_by_mm_id(user_id)
+                if role is None:
+                    await mattermost_bot.send_notification(
+                        destination_id=channel_id,
+                        text="⛔ Вы не зарегистрированы. Обратитесь к администратору.",
+                        thread_id=post_id,
+                    )
+                    return
+
                 # Создать CommandRequest
                 request = CommandRequest(
                     user=UserIdentity(
@@ -333,7 +343,7 @@ async def main() -> None:
                     ),
                     command=command,
                     raw_text=text,
-                    is_admin=True,  # TODO: проверить роль в БД через user_store
+                    is_admin=(role == "admin"),
                 )
 
                 # Выполнить команду

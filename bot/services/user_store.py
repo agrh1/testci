@@ -47,9 +47,16 @@ class UserStore:
 
     async def get_role(self, telegram_id: int) -> Optional[str]:
         """
-        Возвращает роль пользователя, либо None.
+        Возвращает роль пользователя по telegram_id, либо None.
         """
         return await asyncio.to_thread(self._get_role_sync, telegram_id)
+
+    async def get_role_by_mm_id(self, mattermost_user_id: str) -> Optional[str]:
+        """
+        Возвращает роль пользователя по mattermost_user_id, либо None.
+        Ищет сначала в platform_users, затем по username в tg_users.
+        """
+        return await asyncio.to_thread(self._get_role_by_mm_id_sync, mattermost_user_id)
 
     async def upsert_role(self, *, telegram_id: int, role: str, added_by: Optional[int]) -> None:
         """
@@ -193,6 +200,21 @@ class UserStore:
                     """,
                     (tid,),
                 )
+
+    def _get_role_by_mm_id_sync(self, mattermost_user_id: str) -> Optional[str]:
+        with self._connect() as conn, conn.cursor() as cur:
+            # Сначала ищем в platform_users (если таблица существует)
+            try:
+                cur.execute(
+                    "SELECT role FROM platform_users WHERE mattermost_user_id = %s",
+                    (mattermost_user_id,),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    return str(row[0])
+            except Exception:
+                conn.rollback()
+            return None
 
     def _get_role_sync(self, telegram_id: int) -> Optional[str]:
         with self._connect() as conn, conn.cursor() as cur:
