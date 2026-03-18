@@ -248,8 +248,14 @@ class MattermostBotAdapter:
             post ID если успешно, иначе None
         """
         try:
+            # Резолвить имя канала в ID если нужно
+            resolved_id = await self.resolve_channel_id(destination_id)
+            if not resolved_id:
+                self.logger.error(f"Cannot resolve channel: {destination_id}")
+                return None
+
             post_data = {
-                'channel_id': destination_id,
+                'channel_id': resolved_id,
                 'message': text,
             }
             if thread_id:
@@ -262,7 +268,7 @@ class MattermostBotAdapter:
             msg_id = result.get('id')
             if msg_id:
                 self.logger.debug(
-                    f"Message sent to {destination_id}: {msg_id}"
+                    f"Message sent to {resolved_id}: {msg_id}"
                 )
             return msg_id
 
@@ -332,4 +338,42 @@ class MattermostBotAdapter:
             return channel
         except Exception as e:
             self.logger.error(f"Failed to get channel info {channel_id}: {e}")
+            return None
+
+    async def resolve_channel_id(self, destination: str) -> Optional[str]:
+        """
+        Если destination — 26-символьный Mattermost ID, вернуть как есть.
+        Иначе трактовать как имя канала и найти ID через API.
+        """
+        # Mattermost channel ID — 26-символьная alphanumeric строка
+        if len(destination) == 26 and destination.isalnum():
+            return destination
+
+        # Это имя канала — нужен team_id чтобы найти
+        try:
+            # Получить список команд бота
+            teams = await asyncio.to_thread(
+                self.driver.teams.get_user_teams,
+                self._bot_user_id,
+            )
+            for team in teams:
+                try:
+                    channel = await asyncio.to_thread(
+                        self.driver.channels.get_channel_by_name,
+                        team['id'],
+                        destination,
+                    )
+                    self.logger.debug(
+                        f"Resolved channel '{destination}' -> {channel['id']} "
+                        f"(team={team['display_name']})"
+                    )
+                    return channel['id']
+                except Exception:
+                    continue
+
+            self.logger.error(f"Channel '{destination}' not found in any team")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to resolve channel '{destination}': {e}")
             return None
