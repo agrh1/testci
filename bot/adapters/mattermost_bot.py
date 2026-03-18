@@ -1,14 +1,14 @@
 """
 Mattermost Bot Adapter - интеграция через Bot Account + WebSocket.
 
-Этот адаптер подключается к Mattermost как бот (через WebSocket) и слушает сообщения.
-Вместо Slash Commands используем команды в обычных сообщениях: /command arg1 arg2
+Подключается к Mattermost как бот (через WebSocket) и слушает сообщения.
+Команды вызываются через @mention или legacy /command.
 
 Возможности:
-- Слушать сообщения с командами (начинающиеся с /)
+- Слушать сообщения с командами (@botname command или /command)
 - Отправлять сообщения в каналы и в ответ на конкретные посты
 - Поддержка threading (root_id для ответов в ветках)
-- Автоматическое подключение при запуске приложения
+- Автоматическое переподключение при обрыве WebSocket
 """
 
 from __future__ import annotations
@@ -16,24 +16,24 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 try:
     from mattermostdriver import Driver
-except ImportError as e:
+except ImportError:
     Driver = None  # type: ignore
-    _import_error = e
 
 from bot.adapters.base import UserIdentity
 
 
 class MattermostBotAdapter:
     """
-    Мattermost Bot интеграция через Bot Account + WebSocket.
+    Mattermost Bot интеграция через Bot Account + WebSocket.
 
-    Подключается к Mattermost как бот и слушает все сообщения в каналах,
-    автоматически парсит команды и отправляет их в CommandExecutor.
+    Использует выделенный daemon-поток для WebSocket, чтобы не блокировать
+    пул executor'ов asyncio (что приводило к таймаутам Telegram).
     """
 
     def __init__(
@@ -44,16 +44,6 @@ class MattermostBotAdapter:
         logger: logging.Logger,
         on_command: Optional[Callable] = None,
     ):
-        """
-        Инициализация Mattermost Bot адаптера.
-
-        Args:
-            server_url: URL Mattermost сервера (например https://mattermost.example.com)
-            bot_token: Bot Account token из System Console
-            logger: логгер для отладки
-            on_command: callback функция для обработки команд
-                       signature: async on_command(command: str, text: str, user_id: str, channel_id: str, post_id: str)
-        """
         if Driver is None:
             raise ImportError("Install mattermostdriver: pip install mattermostdriver")
 
@@ -62,8 +52,6 @@ class MattermostBotAdapter:
         self.logger = logger
         self.on_command = on_command
 
-        # Инициализируем Mattermost клиент
-        # Parse the server URL to extract host, port, and scheme
         parsed = urlparse(server_url)
         host = parsed.hostname or "localhost"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -78,116 +66,112 @@ class MattermostBotAdapter:
             "verify": True,
         })
 
-        # WebSocket listener будет запущен в отдельной корутине
         self._ws_task: Optional[asyncio.Task] = None
+        self._ws_thread: Optional[threading.Thread] = None
         self._is_running = False
         self._bot_user_id: Optional[str] = None
         self._bot_username: Optional[str] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def start(self) -> None:
-        """Запустить бота (подключиться к WebSocket и слушать)."""
+        """Запустить бота: авторизация + WebSocket listener."""
         if self._is_running:
             self.logger.warning("MattermostBotAdapter is already running")
             return
 
-        try:
-            # Захватить event loop для thread-safe вызовов из WebSocket callback
-            self._loop = asyncio.get_running_loop()
+        self._loop = asyncio.get_running_loop()
 
-            # Авторизоваться (устанавливает token на HTTP-клиент)
-            await asyncio.to_thread(self.driver.login)
+        # Авторизация (в отдельном потоке, чтобы не блокировать loop)
+        await asyncio.to_thread(self.driver.login)
 
-            # Получить информацию о самом боте
-            me = await asyncio.to_thread(self.driver.users.get_user, 'me')
-            self._bot_user_id = me['id']
-            self._bot_username = me['username']
-            self.logger.info(f"✓ Mattermost bot connected: {self._bot_username} (id={self._bot_user_id})")
+        me = await asyncio.to_thread(self.driver.users.get_user, 'me')
+        self._bot_user_id = me['id']
+        self._bot_username = me['username']
+        self.logger.info("✓ Mattermost bot connected: %s (id=%s)", self._bot_username, self._bot_user_id)
 
-            self._is_running = True
-
-            # Запустить WebSocket listener в отдельной задаче
-            self._ws_task = asyncio.create_task(self._listen_websocket())
-            self.logger.info("✓ WebSocket listener started")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to start MattermostBotAdapter: {e}", exc_info=True)
-            raise
+        self._is_running = True
+        self._ws_task = asyncio.create_task(self._ws_supervisor(), name="mm-ws-supervisor")
+        self.logger.info("✓ WebSocket listener started")
 
     async def stop(self) -> None:
         """Остановить бота и закрыть WebSocket."""
         self._is_running = False
         if self._ws_task:
             self._ws_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._ws_task
-            except asyncio.CancelledError:
-                pass
         self.logger.info("✓ MattermostBotAdapter stopped")
 
-    async def _listen_websocket(self) -> None:
-        """
-        Слушать WebSocket события от Mattermost.
+    # ------------------------------------------------------------------
+    # WebSocket supervisor (reconnect loop)
+    # ------------------------------------------------------------------
 
-        Запускаем WebSocket в выделенном daemon-потоке, чтобы не блокировать
-        пул потоков asyncio (иначе asyncio.to_thread вызовы зависнут).
+    async def _ws_supervisor(self) -> None:
         """
+        Управляет WebSocket-подключением с автоматическим реконнектом.
+
+        WebSocket запускается в выделенном daemon-потоке (не в пуле executor),
+        чтобы не блокировать asyncio.to_thread() вызовы для Telegram.
+        """
+        reconnect_delay = 5
+        max_delay = 60
+
         while self._is_running:
             try:
-                # Запустить WebSocket в выделенном потоке (не из пула!)
-                ws_future: asyncio.Future = self._loop.create_future()
+                ws_done = self._loop.create_future()
 
                 def _run_ws():
+                    """Запуск WebSocket в выделенном потоке."""
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        self.driver.init_websocket(self._handle_websocket_message)
+                        self.driver.init_websocket(self._handle_ws_message)
                     except Exception as exc:
-                        # Сигнализировать об ошибке в основной event loop
-                        self._loop.call_soon_threadsafe(ws_future.set_exception, exc)
+                        if not ws_done.done():
+                            self._loop.call_soon_threadsafe(ws_done.set_exception, exc)
                     finally:
                         loop.close()
-                        # Если future ещё не завершён — завершить нормально
-                        if not ws_future.done():
-                            self._loop.call_soon_threadsafe(ws_future.set_result, None)
+                        if not ws_done.done():
+                            self._loop.call_soon_threadsafe(ws_done.set_result, None)
 
-                import threading
-                ws_thread = threading.Thread(
+                self._ws_thread = threading.Thread(
                     target=_run_ws,
                     name="mattermost-ws",
-                    daemon=True,  # Не блокирует shutdown процесса
+                    daemon=True,
                 )
-                ws_thread.start()
+                self._ws_thread.start()
 
-                # Ждём завершения (ошибки или остановки)
-                await ws_future
+                await ws_done
+                # Если дошли сюда — WebSocket завершился нормально
+                reconnect_delay = 5  # сброс при успехе
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"❌ WebSocket error: {e}", exc_info=True)
+                self.logger.warning("WebSocket disconnected: %s", e)
 
             if self._is_running:
-                self.logger.info("Attempting to reconnect in 5 seconds...")
-                await asyncio.sleep(5)
+                self.logger.info("Reconnecting in %ds...", reconnect_delay)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_delay)
 
-    async def _handle_websocket_message(self, msg) -> None:
-        """
-        Обработать сообщение от Mattermost WebSocket.
+    # ------------------------------------------------------------------
+    # WebSocket message handler (async — вызывается из mattermostdriver)
+    # ------------------------------------------------------------------
 
-        mattermostdriver ожидает async callback (await-ит результат).
-        msg может приходить как dict или как JSON-строка (зависит от версии драйвера).
-        """
+    async def _handle_ws_message(self, msg) -> None:
+        """Обработка WebSocket-сообщения. Парсит команды и вызывает on_command."""
         try:
             if isinstance(msg, str):
                 msg = json.loads(msg)
-            event = msg.get('event', '')
 
-            # Нас интересуют только события posted (новые сообщения)
-            if event != 'posted':
+            if msg.get('event') != 'posted':
                 return
 
-            # Распаковать данные поста
             data = msg.get('data', {})
             post_str = data.get('post', '')
             if not post_str:
@@ -199,70 +183,55 @@ class MattermostBotAdapter:
             message = post.get('message', '').strip()
             post_id = post.get('id', '')
 
-            # Игнорировать собственные сообщения
             if user_id == self._bot_user_id:
                 return
 
-            # Парсим команду: поддерживаем два формата:
-            #   1) @botname command args...
-            #   2) /command args...  (legacy)
-            command: Optional[str] = None
-            raw_text = message
-
-            mention = f"@{self._bot_username}" if self._bot_username else None
-
-            if mention and message.lower().startswith(mention.lower()):
-                # @sdbot help_mattermost → command="help_mattermost"
-                after_mention = message[len(mention):].strip()
-                if not after_mention:
-                    # Просто @sdbot без команды — показать help
-                    command = "help_mattermost"
-                else:
-                    parts = after_mention.split(maxsplit=1)
-                    command = parts[0].lstrip('/')
-            elif message.startswith('/'):
-                # Legacy: /command
-                parts = message.split(maxsplit=1)
-                command = parts[0].lstrip('/')
-            else:
-                return
-
+            command = self._parse_command(message)
             if not command:
                 return
 
-            self.logger.debug(
-                f"Received command from {user_id}: {command} in {channel_id}"
-            )
+            self.logger.debug("MM command from %s: %s in %s", user_id, command, channel_id)
 
-            # Вызвать обработку команды
-            if self.on_command:
-                if self._loop and self._loop.is_running():
-                    # Запланировать в основном event loop (thread-safe)
-                    asyncio.run_coroutine_threadsafe(
-                        self.on_command(
-                            command=command,
-                            text=raw_text,
-                            user_id=user_id,
-                            channel_id=channel_id,
-                            post_id=post_id,
-                        ),
-                        self._loop,
-                    )
-                else:
-                    # Если мы уже в event loop (async контекст)
-                    await self.on_command(
+            if self.on_command and self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self.on_command(
                         command=command,
-                        text=raw_text,
+                        text=message,
                         user_id=user_id,
                         channel_id=channel_id,
                         post_id=post_id,
-                    )
+                    ),
+                    self._loop,
+                )
 
+        except json.JSONDecodeError as e:
+            self.logger.warning("Bad JSON in WS message: %s", e)
         except Exception as e:
-            self.logger.error(
-                f"Error handling WebSocket message: {e}",
-                exc_info=True
-            )
+            self.logger.error("WS message handling error: %s", e)
+
+    def _parse_command(self, message: str) -> Optional[str]:
+        """
+        Извлечь команду из сообщения. Поддерживает:
+          1) @botname command args...
+          2) /command args...  (legacy)
+        Возвращает имя команды или None.
+        """
+        mention = f"@{self._bot_username}" if self._bot_username else None
+
+        if mention and message.lower().startswith(mention.lower()):
+            after = message[len(mention):].strip()
+            if not after:
+                return "help_mattermost"
+            return after.split(maxsplit=1)[0].lstrip('/')
+
+        if message.startswith('/'):
+            return message.split(maxsplit=1)[0].lstrip('/')
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Sending messages
+    # ------------------------------------------------------------------
 
     async def send_notification(
         self,
@@ -271,144 +240,95 @@ class MattermostBotAdapter:
         text: str,
         thread_id: Optional[str] = None,
     ) -> Optional[str]:
-        """
-        Отправить сообщение в канал (реализует MessageAdapter протокол).
-
-        Args:
-            destination_id: Mattermost channel ID
-            text: текст сообщения
-            thread_id: post ID для threading (root_id в Mattermost)
-
-        Returns:
-            post ID если успешно, иначе None
-        """
+        """Отправить сообщение в канал. destination_id — ID или имя канала."""
         try:
-            # Резолвить имя канала в ID если нужно
             resolved_id = await self.resolve_channel_id(destination_id)
             if not resolved_id:
-                self.logger.error(f"Cannot resolve channel: {destination_id}")
+                self.logger.error("Cannot resolve channel: %s", destination_id)
                 return None
 
-            post_data = {
+            post_data: Dict[str, Any] = {
                 'channel_id': resolved_id,
                 'message': text,
             }
             if thread_id:
                 post_data['root_id'] = thread_id
 
-            result = await asyncio.to_thread(
-                self.driver.posts.create_post,
-                post_data
-            )
+            result = await asyncio.to_thread(self.driver.posts.create_post, post_data)
             msg_id = result.get('id')
             if msg_id:
-                self.logger.debug(
-                    f"Message sent to {resolved_id}: {msg_id}"
-                )
+                self.logger.debug("Message sent to %s: %s", resolved_id, msg_id)
             return msg_id
 
         except Exception as e:
-            self.logger.error(
-                f"Failed to send message to {destination_id}: {e}",
-                exc_info=True
-            )
+            self.logger.error("Failed to send to %s: %s", destination_id, e)
             return None
 
     async def send_message(self, user: UserIdentity, text: str) -> Optional[str]:
-        """
-        Отправить прямое сообщение пользователю (реализует MessageAdapter протокол).
-
-        Args:
-            user: UserIdentity объект (содержит user_id)
-            text: текст сообщения
-
-        Returns:
-            channel ID если успешно, иначе None
-        """
+        """Отправить прямое сообщение пользователю."""
         try:
-            # Создать DM канал с пользователем
             dm_channel = await asyncio.to_thread(
                 self.driver.channels.create_direct_message_channel,
                 [user.user_id]
             )
-            channel_id = dm_channel['id']
-
-            # Отправить сообщение в DM
-            return await self.send_notification(
-                destination_id=channel_id,
-                text=text,
-            )
-
+            return await self.send_notification(destination_id=dm_channel['id'], text=text)
         except Exception as e:
-            self.logger.error(
-                f"Failed to send DM to {user.user_id}: {e}",
-                exc_info=True
-            )
+            self.logger.error("Failed to send DM to %s: %s", user.user_id, e)
             return None
 
-    async def get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Получить информацию о пользователе Mattermost.
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
 
-        Returns:
-            dict с полями: id, username, first_name, last_name, etc.
-        """
+    async def get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Получить информацию о пользователе Mattermost."""
         try:
-            user = await asyncio.to_thread(
-                self.driver.users.get_user,
-                user_id
-            )
-            return user
+            return await asyncio.to_thread(self.driver.users.get_user, user_id)
         except Exception as e:
-            self.logger.error(f"Failed to get user info {user_id}: {e}")
+            self.logger.error("Failed to get user %s: %s", user_id, e)
             return None
 
     async def get_channel_info(self, channel_id: str) -> Optional[Dict[str, Any]]:
         """Получить информацию о канале."""
         try:
-            channel = await asyncio.to_thread(
-                self.driver.channels.get_channel,
-                channel_id
-            )
-            return channel
+            return await asyncio.to_thread(self.driver.channels.get_channel, channel_id)
         except Exception as e:
-            self.logger.error(f"Failed to get channel info {channel_id}: {e}")
+            self.logger.error("Failed to get channel %s: %s", channel_id, e)
             return None
 
     async def resolve_channel_id(self, destination: str) -> Optional[str]:
         """
-        Если destination — 26-символьный Mattermost ID, вернуть как есть.
-        Иначе трактовать как имя канала и найти ID через API.
+        Резолвить destination в channel_id.
+        Если 26-символьный alphanumeric — вернуть как есть (уже ID).
+        Иначе — найти канал по имени через API.
         """
-        # Mattermost channel ID — 26-символьная alphanumeric строка
         if len(destination) == 26 and destination.isalnum():
             return destination
 
-        # Это имя канала — нужен team_id чтобы найти
         try:
-            # Получить список команд бота
             teams = await asyncio.to_thread(
-                self.driver.teams.get_user_teams,
-                self._bot_user_id,
+                self.driver.teams.get_user_teams, self._bot_user_id,
             )
             for team in teams:
                 try:
                     channel = await asyncio.to_thread(
                         self.driver.channels.get_channel_by_name,
-                        team['id'],
-                        destination,
+                        team['id'], destination,
                     )
                     self.logger.debug(
-                        f"Resolved channel '{destination}' -> {channel['id']} "
-                        f"(team={team['display_name']})"
+                        "Resolved '%s' -> %s (team=%s)",
+                        destination, channel['id'], team['display_name'],
                     )
                     return channel['id']
                 except Exception:
                     continue
 
-            self.logger.error(f"Channel '{destination}' not found in any team")
+            self.logger.error("Channel '%s' not found in any team", destination)
+            return None
+        except Exception as e:
+            self.logger.error("Failed to resolve channel '%s': %s", destination, e)
             return None
 
-        except Exception as e:
-            self.logger.error(f"Failed to resolve channel '{destination}': {e}")
-            return None
+
+# Avoid import error for contextlib used in stop()
+import contextlib  # noqa: E402

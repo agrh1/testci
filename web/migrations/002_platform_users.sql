@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS platform_users (
     mm_disabled_at TIMESTAMPTZ NULL,
 
     -- Synchronization tracking
-    sync_status VARCHAR(50) DEFAULT 'pending' CHECK (sync_status IN ('pending', 'synced', 'failed')),
+    sync_status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (sync_status IN ('pending', 'synced', 'failed')),
     sync_error TEXT NULL,
     last_sync_at TIMESTAMPTZ NULL,
 

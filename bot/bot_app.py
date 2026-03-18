@@ -358,12 +358,11 @@ async def main() -> None:
                     )
 
             except Exception as e:
-                logger.error(f"Error handling Mattermost command: {e}", exc_info=True)
-                # Отправить ошибку в канал
+                logger.error("MM command error (%s): %s", command, e)
                 with contextlib.suppress(Exception):
                     await mattermost_bot.send_notification(
                         destination_id=channel_id,
-                        text=f"❌ Error: {str(e)}",
+                        text=f"❌ Ошибка: {type(e).__name__}: {e}",
                         thread_id=post_id,
                     )
 
@@ -403,7 +402,7 @@ async def main() -> None:
                 # Она будет запущена в background, если мы вернёмся из start()
 
             except Exception as e:
-                logger.error(f"Mattermost bot error: {e}", exc_info=True)
+                logger.error("Mattermost bot error: %s: %s", type(e).__name__, e)
 
         mattermost_bot_task = asyncio.create_task(run_mattermost_bot(), name="mattermost_bot")
     else:
