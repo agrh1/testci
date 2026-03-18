@@ -127,32 +127,47 @@ class MattermostBotAdapter:
         """
         Слушать WebSocket события от Mattermost.
 
-        Фильтруем события:
-        - posted: новое сообщение
-        - Игнорируем собственные сообщения (от самого бота)
-        - Ищем команды (сообщения начинающиеся с /)
+        Запускаем WebSocket в выделенном daemon-потоке, чтобы не блокировать
+        пул потоков asyncio (иначе asyncio.to_thread вызовы зависнут).
         """
-        try:
-            # Подключиться к WebSocket (синхронный вызов, поэтому в отдельном потоке)
-            # mattermostdriver внутри вызывает asyncio.get_event_loop(),
-            # поэтому нужно создать event loop в рабочем потоке
-            def _run_ws():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    self.driver.init_websocket(self._handle_websocket_message)
-                finally:
-                    loop.close()
+        while self._is_running:
+            try:
+                # Запустить WebSocket в выделенном потоке (не из пула!)
+                ws_future: asyncio.Future = self._loop.create_future()
 
-            await asyncio.to_thread(_run_ws)
-        except Exception as e:
-            self.logger.error(f"❌ WebSocket error: {e}", exc_info=True)
+                def _run_ws():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        self.driver.init_websocket(self._handle_websocket_message)
+                    except Exception as exc:
+                        # Сигнализировать об ошибке в основной event loop
+                        self._loop.call_soon_threadsafe(ws_future.set_exception, exc)
+                    finally:
+                        loop.close()
+                        # Если future ещё не завершён — завершить нормально
+                        if not ws_future.done():
+                            self._loop.call_soon_threadsafe(ws_future.set_result, None)
+
+                import threading
+                ws_thread = threading.Thread(
+                    target=_run_ws,
+                    name="mattermost-ws",
+                    daemon=True,  # Не блокирует shutdown процесса
+                )
+                ws_thread.start()
+
+                # Ждём завершения (ошибки или остановки)
+                await ws_future
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"❌ WebSocket error: {e}", exc_info=True)
+
             if self._is_running:
-                # Автоматический переподключение через 5 секунд
                 self.logger.info("Attempting to reconnect in 5 seconds...")
                 await asyncio.sleep(5)
-                if self._is_running:
-                    await self._listen_websocket()
 
     async def _handle_websocket_message(self, msg) -> None:
         """
