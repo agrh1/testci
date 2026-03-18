@@ -269,7 +269,7 @@ class MattermostBotAdapter:
         try:
             dm_channel = await asyncio.to_thread(
                 self.driver.channels.create_direct_message_channel,
-                [user.user_id]
+                [self._bot_user_id, user.user_id]
             )
             return await self.send_notification(destination_id=dm_channel['id'], text=text)
         except Exception as e:
