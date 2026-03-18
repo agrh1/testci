@@ -131,7 +131,7 @@ class RuntimeConfig:
             thread_id = _to_int(os.getenv(f"{prefix}_THREAD_ID", ""))
             if thread_id == 0:
                 thread_id = None
-            return Destination(chat_id=chat_id, thread_id=thread_id)
+            return Destination(platform="telegram", chat_id=chat_id, thread_id=thread_id)
 
         default_dest = _dest("ROUTES_DEFAULT") or _dest("ALERT")
 
@@ -307,7 +307,7 @@ class RuntimeConfig:
             thread_id = _to_int(os.getenv(f"{prefix}_THREAD_ID", ""))
             if thread_id == 0:
                 thread_id = None
-            return Destination(chat_id=chat_id, thread_id=thread_id)
+            return Destination(platform="telegram", chat_id=chat_id, thread_id=thread_id)
 
         default_dest = _dest("EVENTLOG_DEFAULT") or routing.default_dest
 
