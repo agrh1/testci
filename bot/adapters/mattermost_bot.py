@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 try:
     from mattermostdriver import Client
@@ -62,10 +63,20 @@ class MattermostBotAdapter:
         self.on_command = on_command
 
         # Инициализируем Mattermost клиент
+        # Parse the server URL to extract host, port, and scheme
+        parsed = urlparse(server_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        scheme = parsed.scheme or "https"
+
         self.client = Client(
-            url=server_url,
+            options={
+                "host": host,
+                "port": port,
+                "scheme": scheme,
+                "basepath": "/api/v4",
+            },
             token=bot_token,
-            basepath='/api/v4',
         )
 
         # WebSocket listener будет запущен в отдельной корутине
