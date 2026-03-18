@@ -105,6 +105,8 @@ class BotSettings:
     obs_redis_alert_min_interval_s: float
     obs_rollback_alert_min_interval_s: float
     eventlog_base_url: str
+    eventlog_login: str
+    eventlog_password: str
     eventlog_poll_interval_s: int
     eventlog_keepalive_every: int
     eventlog_start_id: int
@@ -172,6 +174,8 @@ class BotSettings:
         obs_rollback_alert_min_interval_s = get_env_float("OBS_ROLLBACK_ALERT_MIN_INTERVAL_S", "300")
 
         eventlog_base_url = get_env("EVENTLOG_BASE_URL", servicedesk_base_url).rstrip("/")
+        eventlog_login = get_env("EVENTLOG_LOGIN", servicedesk_login)
+        eventlog_password = get_env("EVENTLOG_PASSWORD", servicedesk_password)
         eventlog_poll_interval_s = get_env_int("EVENTLOG_POLL_INTERVAL_S", "600")
         eventlog_keepalive_every = get_env_int("EVENTLOG_KEEPALIVE_EVERY", "48")
         eventlog_start_id = get_env_int("EVENTLOG_START_ID", "0")
@@ -223,6 +227,8 @@ class BotSettings:
             obs_redis_alert_min_interval_s=obs_redis_alert_min_interval_s,
             obs_rollback_alert_min_interval_s=obs_rollback_alert_min_interval_s,
             eventlog_base_url=eventlog_base_url,
+            eventlog_login=eventlog_login,
+            eventlog_password=eventlog_password,
             eventlog_poll_interval_s=eventlog_poll_interval_s,
             eventlog_keepalive_every=eventlog_keepalive_every,
             eventlog_start_id=eventlog_start_id,
