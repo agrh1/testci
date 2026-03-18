@@ -9,6 +9,7 @@ Command executor service - унифицированный исполнитель
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
@@ -198,7 +199,19 @@ class CommandExecutor:
 
         try:
             # 3. Выполнить обработчик с инъекцией зависимостей
-            response = await handler(request, **self._dependencies)
+            # Передаём только те зависимости, которые handler принимает
+            sig = inspect.signature(handler)
+            params = sig.parameters
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                # Handler принимает **kwargs — передаём всё
+                kwargs = self._dependencies
+            else:
+                # Фильтруем по именам параметров
+                kwargs = {
+                    k: v for k, v in self._dependencies.items()
+                    if k in params
+                }
+            response = await handler(request, **kwargs)
             if response is None:
                 response = CommandResponse(text="Command executed successfully")
 
