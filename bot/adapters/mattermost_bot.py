@@ -154,14 +154,17 @@ class MattermostBotAdapter:
                 if self._is_running:
                     await self._listen_websocket()
 
-    def _handle_websocket_message(self, msg: Dict[str, Any]) -> None:
+    def _handle_websocket_message(self, msg) -> None:
         """
         Обработать сообщение от Mattermost WebSocket.
 
         Вызывается синхронно из mattermostdriver, поэтому мы должны запланировать
         async задачу в event loop.
+        msg может приходить как dict или как JSON-строка (зависит от версии драйвера).
         """
         try:
+            if isinstance(msg, str):
+                msg = json.loads(msg)
             event = msg.get('event', '')
 
             # Нас интересуют только события posted (новые сообщения)
