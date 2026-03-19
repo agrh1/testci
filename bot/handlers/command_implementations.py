@@ -937,6 +937,87 @@ def _get_config_summary(runtime_config: RuntimeConfig) -> str:
 
 
 # ============================================================================
+# Identity / diagnostic commands
+# ============================================================================
+
+
+async def cmd_whoami(
+    request: CommandRequest,
+    user_store,  # UserStore instance
+) -> CommandResponse:
+    """
+    /whoami — показать информацию о себе (id, username, имя, роль).
+    """
+    user_id = request.user.user_id
+    username = request.user.username or "—"
+    user_info = request.context.get("user_info") or {}
+    first_name = user_info.get("first_name", "")
+    last_name = user_info.get("last_name", "")
+    full_name = f"{first_name} {last_name}".strip() or "—"
+    email = user_info.get("email") or "—"
+    nickname = user_info.get("nickname") or ""
+
+    try:
+        role = await user_store.get_role_by_mm_id(user_id) or "—"
+    except Exception:
+        role = "—"
+
+    lines = [
+        "👤 **whoami**",
+        f"- ID: `{user_id}`",
+        f"- Username: @{username}",
+        f"- Name: {full_name}" + (f" ({nickname})" if nickname else ""),
+        f"- Email: {email}",
+        f"- Role (bot): {role}",
+    ]
+    return CommandResponse.success("\n".join(lines))
+
+
+async def cmd_whereami(
+    request: CommandRequest,
+    mattermost_bot,  # MattermostBotAdapter instance
+) -> CommandResponse:
+    """
+    /whereami — показать ID и название текущего канала и команды.
+    """
+    channel_id = request.context.get("channel_id") or "—"
+
+    team_id = "—"
+    team_name = "—"
+    team_display = "—"
+    channel_name = "—"
+    channel_display = "—"
+
+    if channel_id != "—" and mattermost_bot is not None:
+        ch = await mattermost_bot.get_channel_info(channel_id)
+        if ch:
+            channel_name = ch.get("name") or "—"
+            channel_display = ch.get("display_name") or channel_name
+            team_id = ch.get("team_id") or "—"
+
+        if team_id != "—":
+            tm = await mattermost_bot.get_team_info(team_id)
+            if tm:
+                team_name = tm.get("name") or "—"
+                team_display = tm.get("display_name") or team_name
+
+    lines = [
+        "📍 **whereami**",
+        "",
+        "**Team:**",
+        f"- ID: `{team_id}`",
+        f"- Name: {team_name}  ({team_display})",
+        "",
+        "**Channel:**",
+        f"- ID: `{channel_id}`",
+        f"- Name: {channel_name}  ({channel_display})",
+        "",
+        "Используй `channel_id` в `ROUTES_DEFAULT_DESTINATION_ID` или в правилах конфига.",
+    ]
+    return CommandResponse.success("\n".join(lines))
+
+
+# ============================================================================
 # Mattermost Help Command
 # ============================================================================
 
@@ -950,7 +1031,8 @@ async def cmd_help_mattermost(
     lines = [
         "🤖 ServiceBot - Доступные команды\n",
         "**👤 Пользовательские команды:**",
-        "- `/routes_test [args]` - Тестирование маршрутизации",
+        "- `/whoami` - Кто я: ID, username, имя, роль",
+        "- `/whereami` - Где я: ID и название текущего канала и team",
         "- `/user_list [admins|users]` - Список пользователей",
         "- `/user_history <id> [limit]` - История команд пользователя",
         "- `/user_audit <id> [limit]` - Audit история",

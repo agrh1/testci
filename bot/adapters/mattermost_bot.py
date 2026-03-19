@@ -296,6 +296,14 @@ class MattermostBotAdapter:
             self.logger.error("Failed to get channel %s: %s", channel_id, e)
             return None
 
+    async def get_team_info(self, team_id: str) -> Optional[Dict[str, Any]]:
+        """Получить информацию о команде (workspace)."""
+        try:
+            return await asyncio.to_thread(self.driver.teams.get_team, team_id)
+        except Exception as e:
+            self.logger.error("Failed to get team %s: %s", team_id, e)
+            return None
+
     async def resolve_channel_id(self, destination: str) -> Optional[str]:
         """
         Резолвить destination в channel_id.

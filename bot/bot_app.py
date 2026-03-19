@@ -161,6 +161,8 @@ async def main() -> None:
         cmd_user_history,
         cmd_user_list,
         cmd_user_remove,
+        cmd_whereami,
+        cmd_whoami,
     )
 
     command_executor.set_dependencies({
@@ -197,6 +199,8 @@ async def main() -> None:
     command_executor.register_handler("service_icons", cmd_service_icons)
     command_executor.register_handler("service_icon_add", cmd_service_icon_add)
     command_executor.register_handler("help_mattermost", cmd_help_mattermost)
+    command_executor.register_handler("whoami", cmd_whoami)
+    command_executor.register_handler("whereami", cmd_whereami)
 
     # ========================================================================
     # Observability service
@@ -266,6 +270,11 @@ async def main() -> None:
                 command=command,
                 raw_text=text,
                 is_admin=(role == "admin"),
+                context={
+                    "channel_id": channel_id,
+                    "post_id": post_id,
+                    "user_info": user_info,
+                },
             )
 
             response = await command_executor.execute(request)
@@ -292,6 +301,7 @@ async def main() -> None:
         logger=logger,
         on_command=handle_mattermost_command,
     )
+    command_executor.set_dependency("mattermost_bot", mattermost_bot)
 
     async def run_mattermost_bot() -> None:
         try:
