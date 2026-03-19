@@ -643,6 +643,7 @@ async def cmd_config(
     config_sync: ConfigSyncService,
     runtime_config: RuntimeConfig,
     config_admin_token: str,
+    config_token: str = "",
 ) -> CommandResponse:
     """
     Управление конфигурацией.
@@ -685,7 +686,8 @@ async def cmd_config(
 
     if not arg_str:
         try:
-            token = config_admin_token or ""
+            # Для чтения используем CONFIG_TOKEN (read-only), не CONFIG_ADMIN_TOKEN
+            token = config_token or ""
             res = await web_client.get_config(token=token)
             if not res.get("ok"):
                 err = res.get("error") or "unknown"

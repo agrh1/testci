@@ -1,6 +1,6 @@
 """
 Главная точка сборки приложения бота (Mattermost-only, v3).
-# rebuild: 2026-03-19.2 — fix split(maxsplit=None) TypeError, fix StateManager methods
+# rebuild: 2026-03-19.3 — fix config read token (CONFIG_TOKEN vs CONFIG_ADMIN_TOKEN)
 
 Здесь мы:
 - читаем настройки из env;
@@ -172,6 +172,7 @@ async def main() -> None:
         "notification_service": None,  # Will be set after NotificationService is created
         "user_store": user_store,
         "web_client": web_client,
+        "config_token": settings.config_token,
         "config_admin_token": settings.config_admin_token,
         "state_store": state_store,
         "eventlog_filter_store": eventlog_filter_store,
