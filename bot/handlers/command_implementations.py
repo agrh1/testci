@@ -26,6 +26,19 @@ def _to_int(x: str) -> Optional[int]:
         return None
 
 
+def _get_command_arg(raw_text: str, command: str) -> str:
+    """Извлечь аргумент после имени команды из полного текста сообщения.
+
+    Работает корректно как с "@bot cmd arg", так и с "/cmd arg".
+    Ищет первый токен равный command (с учётом /) и возвращает всё после него.
+    """
+    parts = raw_text.strip().split(maxsplit=None)
+    for i, part in enumerate(parts):
+        if part.lstrip("/").lower() == command.lower():
+            return " ".join(parts[i + 1:]).strip()
+    return ""
+
+
 def _parse_kv_args(text: str) -> dict[str, str]:
     """Parse key=value arguments from command text."""
     parts = text.split()
@@ -393,12 +406,17 @@ async def cmd_escalation_send_test(
 # ============================================================================
 
 
-def _parse_target_id(raw_text: str) -> Optional[str]:
-    """Parse mattermost_user_id from command argument."""
-    parts = (raw_text or "").split()
-    if len(parts) < 2:
+def _parse_target_id(raw_text: str, command: str = "") -> Optional[str]:
+    """Parse mattermost_user_id from command argument.
+
+    Works correctly with full message text "@bot cmd <id>" by extracting
+    the args portion first.
+    """
+    arg_str = _get_command_arg(raw_text, command) if command else raw_text
+    parts = (arg_str or "").split()
+    if not parts:
         return None
-    return parts[1].strip() or None
+    return parts[0].strip() or None
 
 
 async def cmd_user_add(
@@ -410,7 +428,7 @@ async def cmd_user_add(
 
     Добавляет пользователя с ролью user.
     """
-    target_id = _parse_target_id(request.raw_text)
+    target_id = _parse_target_id(request.raw_text, request.command)
     if target_id is None:
         return CommandResponse.error("Формат: /user_add <mattermost_user_id>")
 
@@ -438,7 +456,7 @@ async def cmd_user_remove(
 
     Снимает права пользователя (удаляет запись).
     """
-    target_id = _parse_target_id(request.raw_text)
+    target_id = _parse_target_id(request.raw_text, request.command)
     if target_id is None:
         return CommandResponse.error("Формат: /user_remove <mattermost_user_id>")
 
@@ -463,7 +481,7 @@ async def cmd_admin_add(
 
     Добавляет пользователя с ролью admin.
     """
-    target_id = _parse_target_id(request.raw_text)
+    target_id = _parse_target_id(request.raw_text, request.command)
     if target_id is None:
         return CommandResponse.error("Формат: /admin_add <mattermost_user_id>")
 
@@ -491,17 +509,17 @@ async def cmd_user_list(
 
     Показывает список пользователей и админов.
     """
-    parts = (request.raw_text or "").split()
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
     role_filter = None
     show_history = False
 
-    if len(parts) >= 2:
-        arg = parts[1].strip().lower()
+    if len(parts) >= 1:
+        arg = parts[0].strip().lower()
         if arg in {"admin", "admins"}:
             role_filter = "admin"
         elif arg in {"user", "users"}:
             role_filter = "user"
-        if len(parts) >= 3 and parts[2].strip().lower() == "history":
+        if len(parts) >= 2 and parts[1].strip().lower() == "history":
             show_history = True
 
     try:
@@ -545,18 +563,15 @@ async def cmd_user_history(
 
     Показывает историю команд пользователя.
     """
-    parts = (request.raw_text or "").split()
-    if len(parts) < 2:
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    if len(parts) < 1 or not parts[0].strip():
         return CommandResponse.error("Формат: /user_history <mattermost_user_id> [limit]")
 
-    target_id = parts[1].strip()
-    if not target_id:
-        return CommandResponse.error("Некорректный mattermost_user_id.")
-
+    target_id = parts[0].strip()
     limit = 20
-    if len(parts) >= 3:
+    if len(parts) >= 2:
         try:
-            limit = max(1, min(int(parts[2]), 200))
+            limit = max(1, min(int(parts[1]), 200))
         except Exception:
             limit = 20
 
@@ -586,18 +601,15 @@ async def cmd_user_audit(
 
     Показывает audit-историю по пользователю.
     """
-    parts = (request.raw_text or "").split()
-    if len(parts) < 2:
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    if len(parts) < 1 or not parts[0].strip():
         return CommandResponse.error("Формат: /user_audit <mattermost_user_id> [limit]")
 
-    target_id = parts[1].strip()
-    if not target_id:
-        return CommandResponse.error("Некорректный mattermost_user_id.")
-
+    target_id = parts[0].strip()
     limit = 20
-    if len(parts) >= 3:
+    if len(parts) >= 2:
         try:
-            limit = max(1, min(int(parts[2]), 200))
+            limit = max(1, min(int(parts[1]), 200))
         except Exception:
             limit = 20
 
@@ -643,8 +655,7 @@ async def cmd_config(
     """
     import json
 
-    arg = (request.raw_text or "").split(maxsplit=1)[1:] if " " in request.raw_text else []
-    arg_str = arg[0].strip() if arg else ""
+    arg_str = _get_command_arg(request.raw_text or "", request.command)
 
     if arg_str in {"?", "help", "/?", "-h", "--help"} or arg_str.startswith("?"):
         help_text = _get_config_help_text()
@@ -731,13 +742,13 @@ async def cmd_config_diff(
 
     Показывает diff между версиями конфига.
     """
-    parts = (request.raw_text or "").split()
-    if len(parts) < 3:
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    if len(parts) < 2:
         return CommandResponse.error("Формат: /config_diff <from> <to>")
 
     try:
-        v_from = int(parts[1])
-        v_to = int(parts[2])
+        v_from = int(parts[0])
+        v_to = int(parts[1])
     except Exception:
         return CommandResponse.error("Некорректные версии.")
 
@@ -772,11 +783,11 @@ async def cmd_last_eventlog_id(
     """
     from bot.services.eventlog_worker import EVENTLOG_STATE_KEY
 
-    parts = (request.raw_text or "").split()
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
     if state_store is None:
         return CommandResponse.error("State store отключен.")
 
-    if len(parts) == 1:
+    if len(parts) == 0:
         data = state_store.get_json(EVENTLOG_STATE_KEY) or {}
         last_id = data.get("last_event_id")
         if last_id is None:
@@ -784,9 +795,9 @@ async def cmd_last_eventlog_id(
         else:
             return CommandResponse.success(f"Последний eventlog id: {last_id}")
 
-    if len(parts) >= 3 and parts[1].lower() == "set":
+    if len(parts) >= 2 and parts[0].lower() == "set":
         try:
-            new_id = int(parts[2])
+            new_id = int(parts[1])
         except Exception:
             return CommandResponse.error("Формат: /last_eventlog_id set <id>")
         state_store.set_json(EVENTLOG_STATE_KEY, {"last_event_id": new_id, "updated_at": time.time()})
@@ -878,18 +889,18 @@ async def cmd_service_icon_add(
     """
     /service_icon_add <service_id> <service_code> <icon> [service_name]
     """
-    parts = (request.raw_text or "").split()
-    if len(parts) < 4:
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    if len(parts) < 3:
         return CommandResponse.error("Формат: /service_icon_add <service_id> <service_code> <icon> [service_name]")
 
     try:
-        service_id = int(parts[1])
+        service_id = int(parts[0])
     except Exception:
         return CommandResponse.error("Некорректный service_id.")
 
-    service_code = parts[2].strip()
-    icon = parts[3].strip()
-    service_name = " ".join(parts[4:]).strip()
+    service_code = parts[1].strip()
+    icon = parts[2].strip()
+    service_name = " ".join(parts[3:]).strip()
 
     if not service_code or not icon:
         return CommandResponse.error("Формат: /service_icon_add <service_id> <service_code> <icon> [service_name]")
