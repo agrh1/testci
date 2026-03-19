@@ -16,6 +16,8 @@ from typing import Optional
 
 from bot.adapters.base import MessageAdapter
 from bot.utils.admin_alerts import (
+    AdminAlertDestination,
+    build_forbidden_send_alert_text,
     build_no_destination_alert_text,
     build_redis_degraded_alert_text,
     build_rollbacks_alert_text,
@@ -251,5 +253,3 @@ class ObservabilityService:
         await self._send_alert(dest_admin, text)
 
 
-# Re-import for type reference
-from bot.utils.admin_alerts import AdminAlertDestination, build_forbidden_send_alert_text  # noqa: E402

@@ -6,7 +6,6 @@ CRUD-эндпоинты для управления пользователями
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request

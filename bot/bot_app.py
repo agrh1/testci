@@ -38,7 +38,6 @@ from bot.utils.sd_api_client import SdApiClient, SdApiConfig
 from bot.utils.sd_web_client import SdWebClient
 from bot.utils.state_store import MemoryStateStore, RedisStateStore, ResilientStateStore, StateStore
 from bot.utils.web_client import WebClient
-from bot.utils.web_guard import WebGuard
 
 
 def _build_state_store(settings: BotSettings) -> StateStore:
@@ -71,8 +70,6 @@ async def main() -> None:
         timeout_s=settings.web_timeout_s,
         cache_ttl_s=settings.web_cache_ttl_s,
     )
-    web_guard = WebGuard(web_client)
-
     sd_web_client = SdWebClient(
         base_url=settings.web_base_url,
         timeout_s=settings.sd_web_timeout_s,
