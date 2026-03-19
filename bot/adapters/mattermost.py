@@ -249,7 +249,7 @@ class MattermostStateManager:
 
         key = f"mm_state:{user.user_id}"
         try:
-            state = await self._store.get(key)
+            state = self._store.get_json(key)
             if state:
                 self._logger.debug(f"State retrieved for MM user {user.user_id}")
             return state
@@ -265,7 +265,7 @@ class MattermostStateManager:
         key = f"mm_state:{user.user_id}"
         try:
             # State expires after 1 hour (3600 seconds)
-            await self._store.set(key, state, ttl=3600)
+            self._store.set_json(key, state, ttl_s=3600)
             self._logger.debug(f"State saved for MM user {user.user_id}")
         except Exception as e:
             self._logger.warning(f"Failed to set state for {user.user_id}: {e}")
@@ -277,7 +277,8 @@ class MattermostStateManager:
 
         key = f"mm_state:{user.user_id}"
         try:
-            await self._store.delete(key)
+            # Clear state by setting empty dict (StateStore has no delete method)
+            self._store.set_json(key, {})
             self._logger.debug(f"State cleared for MM user {user.user_id}")
         except Exception as e:
             self._logger.warning(f"Failed to clear state for {user.user_id}: {e}")

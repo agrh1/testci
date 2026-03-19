@@ -220,12 +220,19 @@ class CommandExecutor:
             return response
 
         except Exception as e:
+            import traceback
+            tb_short = "".join(traceback.format_exception(type(e), e, e.__traceback__, limit=3))
             if self._logger:
                 self._logger.error(
-                    f"Error executing command '{command}': {type(e).__name__}: {e}",
-                    exc_info=True,
+                    "Error executing command '%s': %s: %s\n%s",
+                    command, type(e).__name__, e, tb_short,
                 )
-            return CommandResponse.error(f"❌ Error ({type(e).__name__}): {str(e)}")
+            # Показать пользователю понятное сообщение с указанием команды
+            return CommandResponse.error(
+                f"❌ Ошибка при выполнении /{command}\n"
+                f"Тип: {type(e).__name__}\n"
+                f"Описание: {str(e) or 'нет описания'}"
+            )
 
     async def get_user_state(self, user: UserIdentity) -> Optional[Dict[str, Any]]:
         """Получить состояние пользователя (для многошаговых команд)."""

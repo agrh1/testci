@@ -32,7 +32,7 @@ def _get_command_arg(raw_text: str, command: str) -> str:
     Работает корректно как с "@bot cmd arg", так и с "/cmd arg".
     Ищет первый токен равный command (с учётом /) и возвращает всё после него.
     """
-    parts = raw_text.strip().split(maxsplit=None)
+    parts = raw_text.strip().split()
     for i, part in enumerate(parts):
         if part.lstrip("/").lower() == command.lower():
             return " ".join(parts[i + 1:]).strip()

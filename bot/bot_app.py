@@ -1,6 +1,6 @@
 """
 Главная точка сборки приложения бота (Mattermost-only, v3).
-# rebuild: 2026-03-19
+# rebuild: 2026-03-19.2 — fix split(maxsplit=None) TypeError, fix StateManager methods
 
 Здесь мы:
 - читаем настройки из env;
@@ -288,11 +288,16 @@ async def main() -> None:
                 )
 
         except Exception as e:
-            logger.error("MM command error (%s): %s", command, e)
+            logger.error("MM command error (%s): %s: %s", command, type(e).__name__, e, exc_info=True)
             with contextlib.suppress(Exception):
                 await mattermost_bot.send_notification(
                     destination_id=channel_id,
-                    text=f"❌ Ошибка: {type(e).__name__}: {e}",
+                    text=(
+                        f"❌ Внутренняя ошибка при обработке команды /{command}\n"
+                        f"Тип: {type(e).__name__}\n"
+                        f"Описание: {str(e) or 'нет описания'}\n"
+                        f"Обратитесь к администратору."
+                    ),
                     thread_id=post_id,
                 )
 
