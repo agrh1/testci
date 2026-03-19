@@ -115,23 +115,12 @@ class RuntimeConfig:
             os.getenv("ROUTES_CREATOR_COMPANY_ID_FIELD", "CreatorCompanyId").strip() or "CreatorCompanyId"
         )
 
-        def _to_int(x: str) -> Optional[int]:
-            try:
-                x = (x or "").strip()
-                if not x:
-                    return None
-                return int(x)
-            except Exception:
-                return None
-
         def _dest(prefix: str) -> Optional[Destination]:
-            chat_id = _to_int(os.getenv(f"{prefix}_CHAT_ID", ""))
-            if chat_id is None:
+            destination_id = (os.getenv(f"{prefix}_DESTINATION_ID", "") or "").strip()
+            if not destination_id:
                 return None
-            thread_id = _to_int(os.getenv(f"{prefix}_THREAD_ID", ""))
-            if thread_id == 0:
-                thread_id = None
-            return Destination(platform="telegram", chat_id=chat_id, thread_id=thread_id)
+            thread_id_raw = (os.getenv(f"{prefix}_THREAD_ID", "") or "").strip() or None
+            return Destination(platform="mattermost", destination_id=destination_id, thread_id=thread_id_raw)
 
         default_dest = _dest("ROUTES_DEFAULT") or _dest("ALERT")
 
@@ -241,11 +230,14 @@ class RuntimeConfig:
         # destination
         dest = None
         try:
-            raw_dest = {
-                "chat_id": os.getenv("ESCALATION_DEST_CHAT_ID", "").strip() or None,
-                "thread_id": os.getenv("ESCALATION_DEST_THREAD_ID", "").strip() or None,
-            }
-            dest = parse_destination(raw_dest)
+            destination_id = (os.getenv("ESCALATION_DEST_DESTINATION_ID", "") or "").strip()
+            if destination_id:
+                thread_id_raw = (os.getenv("ESCALATION_DEST_THREAD_ID", "") or "").strip() or None
+                dest = parse_destination({
+                    "platform": "mattermost",
+                    "destination_id": destination_id,
+                    "thread_id": thread_id_raw,
+                })
         except Exception:
             dest = None
 
@@ -291,23 +283,12 @@ class RuntimeConfig:
         )
 
     def _load_eventlog_from_env(self, routing: RoutingConfig) -> EventlogConfig:
-        def _to_int(x: str) -> Optional[int]:
-            try:
-                x = (x or "").strip()
-                if not x:
-                    return None
-                return int(x)
-            except Exception:
-                return None
-
         def _dest(prefix: str) -> Optional[Destination]:
-            chat_id = _to_int(os.getenv(f"{prefix}_CHAT_ID", ""))
-            if chat_id is None:
+            destination_id = (os.getenv(f"{prefix}_DESTINATION_ID", "") or "").strip()
+            if not destination_id:
                 return None
-            thread_id = _to_int(os.getenv(f"{prefix}_THREAD_ID", ""))
-            if thread_id == 0:
-                thread_id = None
-            return Destination(platform="telegram", chat_id=chat_id, thread_id=thread_id)
+            thread_id_raw = (os.getenv(f"{prefix}_THREAD_ID", "") or "").strip() or None
+            return Destination(platform="mattermost", destination_id=destination_id, thread_id=thread_id_raw)
 
         default_dest = _dest("EVENTLOG_DEFAULT") or routing.default_dest
 
@@ -534,7 +515,7 @@ class RuntimeConfig:
         if not matches:
             return []
 
-        actions: dict[tuple[int, Optional[int], str], EscalationAction] = {}
+        actions: dict[tuple[str, Optional[str], str], EscalationAction] = {}
         for match in matches:
             rule = match.rule
             dest = rule.dest or self.escalation.dest
@@ -542,7 +523,7 @@ class RuntimeConfig:
                 continue
 
             mention = rule.mention or self.escalation.mention
-            key = (dest.chat_id, dest.thread_id, mention)
+            key = (dest.destination_id or str(dest.chat_id), str(dest.thread_id) if dest.thread_id else None, mention)
             action = actions.get(key)
             if action is None:
                 action = EscalationAction(dest=dest, mention=mention, items=[])
