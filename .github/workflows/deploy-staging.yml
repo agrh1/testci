@@ -61,6 +61,7 @@ jobs:
               - "ruff.toml"
               - "pytest.ini"
               - "setup.cfg"
+              - "tests/**"
 
       - name: Debug filter outputs
         run: |
