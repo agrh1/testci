@@ -8,7 +8,6 @@ import pytest
 
 from web.config_validation import ConfigValidationError, validate_config
 
-
 MM_DEST = {"platform": "mattermost", "destination_id": "abc123channel"}
 MM_DEST_THREAD = {"platform": "mattermost", "destination_id": "abc123channel", "thread_id": "post456"}
 
