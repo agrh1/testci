@@ -14,10 +14,8 @@ import logging
 import time
 from typing import Optional
 
-from aiogram import Bot
-
+from bot.adapters.base import MessageAdapter
 from bot.utils.admin_alerts import (
-    build_forbidden_send_alert_text,
     build_no_destination_alert_text,
     build_redis_degraded_alert_text,
     build_rollbacks_alert_text,
@@ -33,12 +31,13 @@ from bot.utils.web_client import WebClient
 class ObservabilityService:
     """
     Инкапсулирует admin-алерты и проверки деградации.
+    Отправляет алерты через Mattermost adapter.
     """
 
     def __init__(
         self,
         *,
-        bot: Bot,
+        mm_adapter: MessageAdapter,
         polling_state: PollingState,
         runtime_config: RuntimeConfig,
         web_client: WebClient,
@@ -50,7 +49,7 @@ class ObservabilityService:
         redis_alert_min_interval_s: float,
         rollback_alert_min_interval_s: float,
     ) -> None:
-        self._bot = bot
+        self._mm_adapter = mm_adapter
         self._polling_state = polling_state
         self._runtime_config = runtime_config
         self._web_client = web_client
@@ -62,10 +61,18 @@ class ObservabilityService:
         self._redis_alert_min_interval_s = redis_alert_min_interval_s
         self._rollback_alert_min_interval_s = rollback_alert_min_interval_s
 
+    async def _send_alert(self, dest: "AdminAlertDestination", text: str) -> None:
+        """Отправить алерт через MM adapter."""
+        try:
+            await self._mm_adapter.send_notification(
+                destination_id=dest.channel_id,
+                text=text,
+                thread_id=dest.thread_id,
+            )
+        except Exception as e:
+            self._logger.exception("Failed to send alert: %s", e)
+
     async def handle_no_destination(self, items: list[dict]) -> None:
-        """
-        27A: тикет пришёл, но destinations не найден.
-        """
         logger = logging.getLogger("bot.routing_observability")
 
         now = time.time()
@@ -96,59 +103,39 @@ class ObservabilityService:
 
         if dest_admin is None:
             logger.warning(
-                "No destinations and ADMIN_ALERT_CHAT_ID/ALERT_CHAT_ID not set; cannot send admin alert."
+                "No destinations and ADMIN_ALERT_CHANNEL_ID not set; cannot send admin alert."
             )
             return
 
-        try:
-            await self._bot.send_message(
-                chat_id=dest_admin.chat_id,
-                message_thread_id=dest_admin.thread_id,
-                text=alert_text,
-            )
-        except Exception as e:
-            logger.exception("Failed to send admin alert: %s", e)
+        await self._send_alert(dest_admin, alert_text)
 
     async def handle_forbidden_send(
         self,
         *,
-        chat_id: int,
-        thread_id: Optional[int],
+        channel_id: str,
+        thread_id: Optional[str],
         error: str,
         context: Optional[str] = None,
     ) -> None:
-        """
-        Алерт: бот не может отправить сообщение (обычно личка без /start).
-        """
         logger = logging.getLogger("bot.routing_observability")
         dest_admin = parse_admin_alert_dest_from_env()
         if dest_admin is None:
             logger.warning(
-                "Forbidden send to chat_id=%s; ADMIN_ALERT_CHAT_ID/ALERT_CHAT_ID not set.",
-                chat_id,
+                "Forbidden send to channel_id=%s; ADMIN_ALERT_CHANNEL_ID not set.",
+                channel_id,
             )
             return
 
         alert_text = build_forbidden_send_alert_text(
-            chat_id=chat_id,
+            channel_id=channel_id,
             thread_id=thread_id,
             error=error,
             context=context,
         )
 
-        try:
-            await self._bot.send_message(
-                chat_id=dest_admin.chat_id,
-                message_thread_id=dest_admin.thread_id,
-                text=alert_text,
-            )
-        except Exception as e:
-            logger.exception("Failed to send forbidden-send alert: %s", e)
+        await self._send_alert(dest_admin, alert_text)
 
     async def check_web(self) -> None:
-        """
-        27D: алерт при деградации web (/health или /ready).
-        """
         attempts = 3
         last_health = None
         last_ready = None
@@ -189,20 +176,9 @@ class ObservabilityService:
         )
 
         self._polling_state.last_web_alert_at = now
-
-        try:
-            await self._bot.send_message(
-                chat_id=dest_admin.chat_id,
-                message_thread_id=dest_admin.thread_id,
-                text=text,
-            )
-        except Exception as e:
-            self._logger.exception("Failed to send web alert: %s", e)
+        await self._send_alert(dest_admin, text)
 
     async def check_redis(self) -> None:
-        """
-        27D: алерт при деградации Redis/StateStore.
-        """
         if self._state_store is None:
             return
 
@@ -237,20 +213,9 @@ class ObservabilityService:
         text = build_redis_degraded_alert_text(error=error, last_ok_ts=last_ok_ts)
 
         self._polling_state.last_redis_alert_at = now
-
-        try:
-            await self._bot.send_message(
-                chat_id=dest_admin.chat_id,
-                message_thread_id=dest_admin.thread_id,
-                text=text,
-            )
-        except Exception as e:
-            self._logger.exception("Failed to send redis alert: %s", e)
+        await self._send_alert(dest_admin, text)
 
     async def check_rollbacks(self, *, window_s: int, threshold: int) -> None:
-        """
-        27B: алерт при частых rollback конфигурации.
-        """
         if not self._config_admin_token:
             return
 
@@ -283,12 +248,8 @@ class ObservabilityService:
         text = build_rollbacks_alert_text(count=count, window_s=window_s, last_at=last_at)
 
         self._polling_state.last_rollback_alert_at = now
+        await self._send_alert(dest_admin, text)
 
-        try:
-            await self._bot.send_message(
-                chat_id=dest_admin.chat_id,
-                message_thread_id=dest_admin.thread_id,
-                text=text,
-            )
-        except Exception as e:
-            self._logger.exception("Failed to send rollback alert: %s", e)
+
+# Re-import for type reference
+from bot.utils.admin_alerts import AdminAlertDestination, build_forbidden_send_alert_text  # noqa: E402

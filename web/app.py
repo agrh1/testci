@@ -17,6 +17,7 @@ from web.logging_setup import setup_logging
 from web.routes import config as config_routes
 from web.routes import health as health_routes
 from web.routes import sd as sd_routes
+from web.routes import users as users_routes
 from web.settings import build_flask_config
 
 
@@ -57,5 +58,6 @@ def create_app() -> Flask:
     app.register_blueprint(health_routes.bp)
     app.register_blueprint(sd_routes.bp)
     app.register_blueprint(config_routes.bp)
+    app.register_blueprint(users_routes.bp)
 
     return app

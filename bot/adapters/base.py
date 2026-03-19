@@ -14,13 +14,13 @@ from typing import Any, Dict, Optional, Protocol
 class UserIdentity:
     """Unified representation of a user across platforms."""
 
-    user_id: str  # telegram_id (as str) or mattermost_user_id
-    platform: str  # 'telegram' or 'mattermost'
+    user_id: str  # mattermost_user_id
+    platform: str  # 'mattermost'
     username: Optional[str] = None
     full_name: Optional[str] = None
 
     def __post_init__(self):
-        if self.platform not in ("telegram", "mattermost"):
+        if self.platform != "mattermost":
             raise ValueError(f"Invalid platform: {self.platform}")
 
 
@@ -29,36 +29,20 @@ class MessageResponse:
     """Unified response from handling a message or command."""
 
     text: str
-    reply_to: Optional[str] = None  # Message ID to reply to
-    attachments: Optional[list] = None  # Files, images, etc.
-    thread_id: Optional[str] = None  # For threaded replies
+    reply_to: Optional[str] = None
+    attachments: Optional[list] = None
+    thread_id: Optional[str] = None
 
 
 class MessageAdapter(Protocol):
-    """
-    Interface for sending messages to users or destinations.
-
-    Implementations: TelegramMessageAdapter, MattermostMessageAdapter
-    """
+    """Interface for sending messages to users or destinations."""
 
     async def send_message(
         self,
         user: UserIdentity,
         text: str,
         parse_mode: Optional[str] = None,
-    ) -> Optional[str]:
-        """
-        Send a direct message to a user.
-
-        Args:
-            user: Target user identity
-            text: Message text (markdown or HTML depending on platform)
-            parse_mode: Optional format hint ('HTML', 'Markdown', etc.)
-
-        Returns:
-            Message ID on success, None on failure
-        """
-        ...
+    ) -> Optional[str]: ...
 
     async def send_notification(
         self,
@@ -66,66 +50,18 @@ class MessageAdapter(Protocol):
         text: str,
         thread_id: Optional[str] = None,
         parse_mode: Optional[str] = None,
-    ) -> Optional[str]:
-        """
-        Send a notification to a channel/chat.
+    ) -> Optional[str]: ...
 
-        Args:
-            destination_id: Destination identifier (chat_id for TG, channel_id for MM)
-            text: Notification text
-            thread_id: Optional thread/topic ID for organized conversations
-            parse_mode: Optional format hint
+    async def get_user_info(self, user: UserIdentity) -> Optional[Dict[str, Any]]: ...
 
-        Returns:
-            Message ID on success, None on failure
-        """
-        ...
-
-    async def get_user_info(self, user: UserIdentity) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve user information from the platform.
-
-        Returns:
-            Dictionary with user info (username, full_name, etc.) or None
-        """
-        ...
-
-    async def is_alive(self) -> bool:
-        """
-        Check if the adapter can reach the platform.
-
-        Returns:
-            True if platform is reachable, False otherwise
-        """
-        ...
+    async def is_alive(self) -> bool: ...
 
 
 class StateManager(Protocol):
-    """
-    Interface for managing user command state across platforms.
+    """Interface for managing user command state across platforms."""
 
-    Implementations: TelegramStateManager, MattermostStateManager
-    """
+    async def get_state(self, user: UserIdentity) -> Optional[Dict[str, Any]]: ...
 
-    async def get_state(self, user: UserIdentity) -> Optional[Dict[str, Any]]:
-        """
-        Get user's current command state (for multi-step commands).
+    async def set_state(self, user: UserIdentity, state: Dict[str, Any]) -> None: ...
 
-        Returns:
-            State dict or None if no state exists
-        """
-        ...
-
-    async def set_state(self, user: UserIdentity, state: Dict[str, Any]) -> None:
-        """
-        Save user's command state.
-
-        Args:
-            user: User identity
-            state: State dictionary to save
-        """
-        ...
-
-    async def clear_state(self, user: UserIdentity) -> None:
-        """Clear user's state after command completes."""
-        ...
+    async def clear_state(self, user: UserIdentity) -> None: ...

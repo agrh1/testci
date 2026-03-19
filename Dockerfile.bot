@@ -1,5 +1,5 @@
 # Dockerfile.bot
-# Образ для Telegram-бота (aiogram).
+# Образ для Mattermost-бота.
 # Важно: встраиваем GIT_SHA в ENV, чтобы /status мог показать версию.
 
 FROM python:3.12-slim

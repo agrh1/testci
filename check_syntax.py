@@ -86,7 +86,7 @@ def check_imports():
     print_header("2️⃣  ПРОВЕРКА ИМПОРТОВ")
 
     imports_to_check = [
-        ("bot.adapters", ["TelegramMessageAdapter", "MattermostMessageAdapter", "UserIdentity"]),
+        ("bot.adapters", ["MattermostMessageAdapter", "UserIdentity"]),
         ("bot.config.settings", ["BotSettings"]),
         ("web.db", ["PlatformUser", "PlatformDestination", "PlatformSyncLog"]),
         ("bot.adapters.base", ["MessageAdapter", "StateManager"]),

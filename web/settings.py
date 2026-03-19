@@ -18,7 +18,7 @@ REQUIRED_ENV_VARS = [
     "SERVICEDESK_BASE_URL",
     "SERVICEDESK_LOGIN",
     "SERVICEDESK_PASSWORD",
-    "TELEGRAM_BOT_TOKEN",
+    "MATTERMOST_BOT_TOKEN",
 ]
 
 
@@ -57,7 +57,7 @@ def build_flask_config() -> dict[str, object]:
     return {
         "ENVIRONMENT": get_environment(),
         "GIT_SHA": get_git_sha(),
-        "TELEGRAM_BOT_TOKEN": get_env("TELEGRAM_BOT_TOKEN", "").strip(),
+        "MATTERMOST_BOT_TOKEN": get_env("MATTERMOST_BOT_TOKEN", "").strip(),
         "SERVICEDESK_BASE_URL": get_env("SERVICEDESK_BASE_URL", "").strip(),
         "SERVICEDESK_LOGIN": get_env("SERVICEDESK_LOGIN", "").strip(),
         "SERVICEDESK_PASSWORD": get_env("SERVICEDESK_PASSWORD", "").strip(),

@@ -1,8 +1,5 @@
 """
-Платформо-независимые реализации команд.
-
-Эти команды могут быть вызваны как из Telegram (через adapters),
-так и из Mattermost (через CommandExecutor).
+Платформо-независимые реализации команд (Mattermost).
 
 Каждая команда принимает CommandRequest и возвращает CommandResponse.
 """
@@ -137,12 +134,7 @@ async def cmd_routes_test(
         lines.append("— (ничего; default_dest тоже не задан)")
     else:
         for d in dests:
-            if d.platform == "telegram":
-                lines.append(f"- telegram: chat_id={d.chat_id}, thread_id={d.thread_id if d.thread_id is not None else '—'}")
-            elif d.platform == "mattermost":
-                lines.append(f"- mattermost: channel={d.destination_id}, root_id={d.thread_id if d.thread_id is not None else '—'}")
-            else:
-                lines.append(f"- {d.platform}: (unknown)")
+            lines.append(f"- mattermost: channel={d.destination_id}, root_id={d.thread_id if d.thread_id is not None else '—'}")
 
     return CommandResponse.success("\n".join(lines))
 
@@ -211,11 +203,7 @@ async def cmd_routes_debug(
         if rule_name:
             label = f"{label} {rule_name}"
 
-        platform_info = f"{dest['platform']}"
-        if dest['platform'] == "telegram":
-            platform_info += f": chat_id={dest['chat_id']}"
-        elif dest['platform'] == "mattermost":
-            platform_info += f": channel={dest['destination_id']}"
+        platform_info = f"mattermost: channel={dest['destination_id']}"
 
         lines.append(f"{label} {matched} -> {platform_info}, thread_id={dest['thread_id'] if dest['thread_id'] is not None else '—'}")
         lines.append(f"   reason: {reason}")
@@ -293,10 +281,7 @@ async def cmd_routes_send_test(
             )
             sent += 1
         except Exception as e:
-            if d.platform == "telegram":
-                failed.append(f"telegram: chat_id={d.chat_id}, thread_id={d.thread_id if d.thread_id is not None else '—'} -> {e}")
-            else:
-                failed.append(f"{d.platform}: channel={d.destination_id} -> {e}")
+            failed.append(f"mattermost: channel={d.destination_id} -> {e}")
 
     lines = ["📨 routes_send_test result", f"- destinations: {len(dests)}", f"- sent: {sent}"]
     if failed:
@@ -387,10 +372,7 @@ async def cmd_escalation_send_test(
             )
             sent += 1
         except Exception as e:
-            if action.dest.platform == "telegram":
-                failed.append(f"telegram: chat_id={action.dest.chat_id} -> {e}")
-            else:
-                failed.append(f"{action.dest.platform}: channel={action.dest.destination_id} -> {e}")
+            failed.append(f"mattermost: channel={action.dest.destination_id} -> {e}")
 
     lines = [
         "📨 escalation_send_test result",
@@ -411,15 +393,12 @@ async def cmd_escalation_send_test(
 # ============================================================================
 
 
-def _parse_target_id(raw_text: str) -> Optional[int]:
-    """Parse telegram_id from command argument."""
+def _parse_target_id(raw_text: str) -> Optional[str]:
+    """Parse mattermost_user_id from command argument."""
     parts = (raw_text or "").split()
     if len(parts) < 2:
         return None
-    try:
-        return int(parts[1])
-    except Exception:
-        return None
+    return parts[1].strip() or None
 
 
 async def cmd_user_add(
@@ -427,24 +406,23 @@ async def cmd_user_add(
     user_store,  # UserStore instance
 ) -> CommandResponse:
     """
-    /user_add <telegram_id>
+    /user_add <mattermost_user_id>
 
     Добавляет пользователя с ролью user.
     """
     target_id = _parse_target_id(request.raw_text)
     if target_id is None:
-        return CommandResponse.error("Формат: /user_add <telegram_id>")
+        return CommandResponse.error("Формат: /user_add <mattermost_user_id>")
 
     try:
-        await user_store.upsert_role(
-            telegram_id=target_id,
+        await user_store.upsert_user(
+            mattermost_user_id=target_id,
             role="user",
-            added_by=int(request.user.user_id) if request.user.user_id.isdigit() else None,
         )
         await user_store.log_audit(
-            telegram_id=target_id,
+            mattermost_user_id=target_id,
             action="U:user_add",
-            actor_id=int(request.user.user_id) if request.user.user_id.isdigit() else None,
+            actor_id=request.user.user_id,
         )
         return CommandResponse.success(f"✅ Пользователь добавлен: {target_id}")
     except Exception as e:
@@ -456,20 +434,20 @@ async def cmd_user_remove(
     user_store,  # UserStore instance
 ) -> CommandResponse:
     """
-    /user_remove <telegram_id>
+    /user_remove <mattermost_user_id>
 
     Снимает права пользователя (удаляет запись).
     """
     target_id = _parse_target_id(request.raw_text)
     if target_id is None:
-        return CommandResponse.error("Формат: /user_remove <telegram_id>")
+        return CommandResponse.error("Формат: /user_remove <mattermost_user_id>")
 
     try:
         await user_store.delete_user(target_id)
         await user_store.log_audit(
-            telegram_id=target_id,
+            mattermost_user_id=target_id,
             action="D:user_remove",
-            actor_id=int(request.user.user_id) if request.user.user_id.isdigit() else None,
+            actor_id=request.user.user_id,
         )
         return CommandResponse.success(f"✅ Пользователь удалён: {target_id}")
     except Exception as e:
@@ -481,24 +459,23 @@ async def cmd_admin_add(
     user_store,  # UserStore instance
 ) -> CommandResponse:
     """
-    /admin_add <telegram_id>
+    /admin_add <mattermost_user_id>
 
     Добавляет пользователя с ролью admin.
     """
     target_id = _parse_target_id(request.raw_text)
     if target_id is None:
-        return CommandResponse.error("Формат: /admin_add <telegram_id>")
+        return CommandResponse.error("Формат: /admin_add <mattermost_user_id>")
 
     try:
-        await user_store.upsert_role(
-            telegram_id=target_id,
+        await user_store.upsert_user(
+            mattermost_user_id=target_id,
             role="admin",
-            added_by=int(request.user.user_id) if request.user.user_id.isdigit() else None,
         )
         await user_store.log_audit(
-            telegram_id=target_id,
+            mattermost_user_id=target_id,
             action="U:admin_add",
-            actor_id=int(request.user.user_id) if request.user.user_id.isdigit() else None,
+            actor_id=request.user.user_id,
         )
         return CommandResponse.success(f"✅ Админ добавлен: {target_id}")
     except Exception as e:
@@ -542,18 +519,17 @@ async def cmd_user_list(
         lines = [f"{title} (до 200):"]
         for it in items:
             role = it.get("role", "—")
-            tid = it.get("telegram_id", "—")
+            mm_id = it.get("mattermost_user_id", "—")
             username = it.get("username") or "—"
             full_name = it.get("full_name") or "—"
-            phone = it.get("phone") or "—"
 
             if show_history:
                 last_cmd = it.get("last_command") or "—"
                 last_at = it.get("last_command_at")
                 last_at_s = last_at.strftime("%Y-%m-%d %H:%M:%S") if last_at else "—"
-                lines.append(f"- {role:6} {tid:12} @{username:20} {full_name:22} {phone:16} {last_cmd} @ {last_at_s}")
+                lines.append(f"- {role:6} {mm_id:26} @{username:20} {full_name:22} {last_cmd} @ {last_at_s}")
             else:
-                lines.append(f"- {role:6} {tid:12} @{username:20} {full_name:22} {phone:16}")
+                lines.append(f"- {role:6} {mm_id:26} @{username:20} {full_name:22}")
 
         return CommandResponse.success("\n".join(lines))
     except Exception as e:
@@ -565,18 +541,17 @@ async def cmd_user_history(
     user_store,  # UserStore instance
 ) -> CommandResponse:
     """
-    /user_history <telegram_id> [limit]
+    /user_history <mattermost_user_id> [limit]
 
     Показывает историю команд пользователя.
     """
     parts = (request.raw_text or "").split()
     if len(parts) < 2:
-        return CommandResponse.error("Формат: /user_history <telegram_id> [limit]")
+        return CommandResponse.error("Формат: /user_history <mattermost_user_id> [limit]")
 
-    try:
-        target_id = int(parts[1])
-    except Exception:
-        return CommandResponse.error("Некорректный telegram_id.")
+    target_id = parts[1].strip()
+    if not target_id:
+        return CommandResponse.error("Некорректный mattermost_user_id.")
 
     limit = 20
     if len(parts) >= 3:
@@ -607,18 +582,17 @@ async def cmd_user_audit(
     user_store,  # UserStore instance
 ) -> CommandResponse:
     """
-    /user_audit <telegram_id> [limit]
+    /user_audit <mattermost_user_id> [limit]
 
     Показывает audit-историю по пользователю.
     """
     parts = (request.raw_text or "").split()
     if len(parts) < 2:
-        return CommandResponse.error("Формат: /user_audit <telegram_id> [limit]")
+        return CommandResponse.error("Формат: /user_audit <mattermost_user_id> [limit]")
 
-    try:
-        target_id = int(parts[1])
-    except Exception:
-        return CommandResponse.error("Некорректный telegram_id.")
+    target_id = parts[1].strip()
+    if not target_id:
+        return CommandResponse.error("Некорректный mattermost_user_id.")
 
     limit = 20
     if len(parts) >= 3:

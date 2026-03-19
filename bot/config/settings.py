@@ -26,41 +26,16 @@ def get_env(name: str, default: str | None = None, required: bool = False) -> st
 
 
 def get_env_float(name: str, default: str) -> float:
-    """
-    Читает float из env, либо использует default.
-    """
     return float(os.getenv(name, default))
 
 
 def get_env_int(name: str, default: str) -> int:
-    """
-    Читает int из env, либо использует default.
-    """
     return int(os.getenv(name, default))
-
-
-def parse_int_list(raw: str) -> list[int]:
-    """
-    Парсит список int из строки вида "1,2, 3".
-    """
-    out: list[int] = []
-    for part in (raw or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            out.append(int(part))
-        except Exception:
-            continue
-    return out
 
 
 def normalize_database_url(url: str) -> str:
     """
     Нормализует DATABASE_URL для прямого подключения psycopg2.
-
-    Web использует SQLAlchemy-формат: postgresql+psycopg2://...
-    Для psycopg2 нужен postgresql://...
     """
     if url.startswith("postgresql+psycopg2://"):
         return url.replace("postgresql+psycopg2://", "postgresql://", 1)
@@ -72,7 +47,6 @@ class BotSettings:
     """
     Все настройки бота, собранные в один объект.
     """
-    token: str
     web_base_url: str
     log_level: str
     web_timeout_s: float
@@ -88,8 +62,6 @@ class BotSettings:
     config_timeout_s: float
     config_admin_token: str
     database_url: str
-    tg_admins: tuple[int, ...]
-    tg_users: tuple[int, ...]
     redis_url: str
     redis_socket_timeout_s: float
     redis_connect_timeout_s: float
@@ -113,24 +85,15 @@ class BotSettings:
     eventlog_enabled: bool
     getlink_poll_interval_s: int
     getlink_lookback_s: int
-    # === Mattermost integration (new)
-    mattermost_api_url: str = ""
-    mattermost_bot_token: str = ""
+    # Mattermost
+    mattermost_api_url: str
+    mattermost_bot_token: str
     mattermost_webhook_secret: str = ""
     mattermost_startup_channel_id: str = "town-square"
-    tg_enabled: bool = True
-    mattermost_enabled: bool = False
-    dual_mode_enabled: bool = False
-    default_platform: str = "telegram"
 
     @classmethod
     def from_env(cls) -> "BotSettings":
-        """
-        Считывает настройки из окружения с дефолтами.
-        """
         log_level = get_env("LOG_LEVEL", "INFO")
-
-        token = get_env("TELEGRAM_BOT_TOKEN", required=True)
 
         web_base_url = get_env("WEB_BASE_URL", "http://web:8000").rstrip("/")
 
@@ -152,9 +115,6 @@ class BotSettings:
 
         database_url = get_env("DATABASE_URL", "").strip()
         database_url = normalize_database_url(database_url)
-
-        tg_admins = tuple(parse_int_list(get_env("TG_ADMINS", "")))
-        tg_users = tuple(parse_int_list(get_env("TG_USERS", "")))
 
         redis_url = get_env("REDIS_URL", "").strip()
         redis_socket_timeout_s = get_env_float("REDIS_SOCKET_TIMEOUT_S", "1.0")
@@ -183,18 +143,13 @@ class BotSettings:
         getlink_poll_interval_s = get_env_int("GETLINK_POLL_INTERVAL_S", "60")
         getlink_lookback_s = get_env_int("GETLINK_LOOKBACK_S", "120")
 
-        # === Mattermost integration (new)
-        mattermost_api_url = get_env("MATTERMOST_API_URL", "").strip()
-        mattermost_bot_token = get_env("MATTERMOST_BOT_TOKEN", "").strip()
+        # Mattermost (required)
+        mattermost_api_url = get_env("MATTERMOST_API_URL", required=True).strip()
+        mattermost_bot_token = get_env("MATTERMOST_BOT_TOKEN", required=True).strip()
         mattermost_webhook_secret = get_env("MATTERMOST_WEBHOOK_SECRET", "").strip()
         mattermost_startup_channel_id = get_env("MATTERMOST_STARTUP_CHANNEL_ID", "town-square").strip()
-        tg_enabled = get_env("TG_ENABLED", "1").strip().lower() in ("1", "true", "yes")
-        mattermost_enabled = get_env("MATTERMOST_ENABLED", "0").strip().lower() in ("1", "true", "yes")
-        dual_mode_enabled = get_env("DUAL_MODE_ENABLED", "0").strip().lower() in ("1", "true", "yes")
-        default_platform = get_env("DEFAULT_PLATFORM", "telegram").strip().lower()
 
         return cls(
-            token=token,
             web_base_url=web_base_url,
             log_level=log_level,
             web_timeout_s=web_timeout_s,
@@ -210,8 +165,6 @@ class BotSettings:
             config_timeout_s=config_timeout_s,
             config_admin_token=config_admin_token,
             database_url=database_url,
-            tg_admins=tg_admins,
-            tg_users=tg_users,
             redis_url=redis_url,
             redis_socket_timeout_s=redis_socket_timeout_s,
             redis_connect_timeout_s=redis_connect_timeout_s,
@@ -239,8 +192,4 @@ class BotSettings:
             mattermost_bot_token=mattermost_bot_token,
             mattermost_webhook_secret=mattermost_webhook_secret,
             mattermost_startup_channel_id=mattermost_startup_channel_id,
-            tg_enabled=tg_enabled,
-            mattermost_enabled=mattermost_enabled,
-            dual_mode_enabled=dual_mode_enabled,
-            default_platform=default_platform,
         )

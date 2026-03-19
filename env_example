@@ -14,267 +14,142 @@
 # -----------------------------
 # Общие параметры
 # -----------------------------
-# Среда запуска: local/staging/prod.
 ENVIRONMENT=prod
-# Переменные для docker-compose (deploy).
-# Версия образа (используется в docker-compose.prod.yml).
 APP_VERSION=0.0.0
-# Значение для FLASK_ENV (prod/staging/local).
 APP_ENV=prod
-# SHA текущего коммита (для /status).
 GIT_SHA=unknown
-# Уровень логирования приложения.
 LOG_LEVEL=INFO
-# Таймзона контейнера.
 TZ=Europe/Moscow
 
 # -----------------------------
-# Telegram доступ
+# Mattermost (обязательно)
 # -----------------------------
-# Список admin id через запятую.
-TG_ADMINS=123456789,987654321
-# Список user id через запятую.
-TG_USERS=111222333,444555666
+# Полный URL Mattermost сервера.
+MATTERMOST_API_URL=https://mattermost.example.com
+# Personal Access Token бота в Mattermost.
+MATTERMOST_BOT_TOKEN=__REPLACE_ME__
+# Webhook secret (опционально).
+MATTERMOST_WEBHOOK_SECRET=
+# Channel ID для стартового сообщения (по умолчанию town-square).
+MATTERMOST_STARTUP_CHANNEL_ID=town-square
+
+# -----------------------------
+# Admin alerts (Mattermost)
+# -----------------------------
+# Channel ID для админских алертов.
+ADMIN_ALERT_CHANNEL_ID=
+ADMIN_ALERT_THREAD_ID=
+# Fallback destination.
+ALERT_CHANNEL_ID=
+ALERT_THREAD_ID=
+# Минимальный интервал алертов (сек).
+ADMIN_ALERT_MIN_INTERVAL_S=300
 
 # -----------------------------
 # Web сервис
 # -----------------------------
-# Порт публикации web на хосте (host:container).
 APP_PORT=8000
-# Порт web-сервиса внутри контейнера.
 PORT=8000
-# Строгая readiness-проверка (1/0).
 STRICT_READINESS=1
 
-# База IntraService (ServiceDesk) — корневой URL.
+# База IntraService (ServiceDesk).
 SERVICEDESK_BASE_URL=https://support.example.org
-# Логин для Basic Auth.
 SERVICEDESK_LOGIN=sd_bot
-# Пароль для Basic Auth.
 SERVICEDESK_PASSWORD=__REPLACE_ME__
-# Таймаут запросов к IntraService (сек).
 SERVICEDESK_TIMEOUT_S=10
 
 # -----------------------------
 # Eventlog (ServiceDesk legacy)
 # -----------------------------
-# Включить обработку eventlog (1/0).
 EVENTLOG_ENABLED=1
-# Базовый URL для eventlog (если отличается от SERVICEDESK_BASE_URL).
 EVENTLOG_BASE_URL=
-# Интервал опроса eventlog при отсутствии новых событий (сек).
 EVENTLOG_POLL_INTERVAL_S=600
-# Через сколько циклов писать "I'm work..." (например 48 * 10 мин = 8 часов).
 EVENTLOG_KEEPALIVE_EVERY=48
-# Начальный event_id (если 0 — берём последний существующий).
 EVENTLOG_START_ID=0
-
-# Токен бота нужен для readiness web (проверка наличия env).
-TELEGRAM_BOT_TOKEN=123456:ABCDEF
 
 # -----------------------------
 # База данных (Postgres)
 # -----------------------------
-# Название БД.
 POSTGRES_DB=testci
-# Пользователь БД.
 POSTGRES_USER=testci
-# Пароль БД.
 POSTGRES_PASSWORD=__REPLACE_ME__
-# Строка подключения к Postgres.
 DATABASE_URL=postgresql+psycopg2://testci:__REPLACE_ME__@postgres:5432/testci
 
 # -----------------------------
 # Runtime-конфиг бота (web /config)
 # -----------------------------
-# Полный URL для /config.
 CONFIG_URL=http://web:8000/config
-# Токен на чтение /config (опционально).
 CONFIG_TOKEN=__REPLACE_ME__
-# Админ-токен для изменения /config.
 CONFIG_ADMIN_TOKEN=__REPLACE_ME__
-# TTL кеша конфига (сек).
 CONFIG_TTL_S=60
-# Таймаут запроса конфига (сек).
 CONFIG_TIMEOUT_S=2.5
 
 # -----------------------------
 # Bot: связи с web
 # -----------------------------
-# Базовый URL web-сервиса для бота.
 WEB_BASE_URL=http://web:8000
-# Таймаут запросов к web (сек).
 WEB_TIMEOUT_S=1.5
-# TTL кеша web проверок (сек).
 WEB_CACHE_TTL_S=3.0
-# Таймаут /sd/open (сек).
 SD_WEB_TIMEOUT_S=3
 
 # -----------------------------
 # Bot: Redis
 # -----------------------------
-# URL Redis.
 REDIS_URL=redis://redis:6379/0
-# Таймаут чтения сокета Redis (сек).
 REDIS_SOCKET_TIMEOUT_S=1.0
-# Таймаут подключения к Redis (сек).
 REDIS_CONNECT_TIMEOUT_S=1.0
 
 # -----------------------------
 # Bot: polling и лимиты
 # -----------------------------
-# Интервал polling (сек).
 POLL_INTERVAL_S=30
-# Максимальный backoff (сек).
 POLL_MAX_BACKOFF_S=300
-# Минимальная частота уведомлений (сек).
 MIN_NOTIFY_INTERVAL_S=60
-# Максимум заявок в одном сообщении.
 MAX_ITEMS_IN_MESSAGE=10
-# Интервал проверки getlink_* (сек).
 GETLINK_POLL_INTERVAL_S=60
-# Окно поиска изменённых заявок (сек).
 GETLINK_LOOKBACK_S=120
 
 # -----------------------------
-# Routing (fallback через env)
+# Routing (Mattermost destinations)
 # -----------------------------
-# Chat ID для default routing.
-ROUTES_DEFAULT_CHAT_ID=-1001234567890
-# Thread ID для default routing (0 = без треда).
-ROUTES_DEFAULT_THREAD_ID=0
-# Имя поля service_id в заявке.
+# Default routing destination (Mattermost channel_id).
+ROUTES_DEFAULT_DESTINATION_ID=
+ROUTES_DEFAULT_THREAD_ID=
 ROUTES_SERVICE_ID_FIELD=ServiceId
-# Имя поля customer_id в заявке.
 ROUTES_CUSTOMER_ID_FIELD=CustomerId
 # JSON-правила маршрутизации.
 ROUTES_RULES=[]
 
 # -----------------------------
-# Eventlog routing (fallback)
+# Eventlog routing
 # -----------------------------
-# Destination для eventlog, если не задана в /config (ветка eventlog).
-EVENTLOG_DEFAULT_CHAT_ID=
+EVENTLOG_DEFAULT_DESTINATION_ID=
 EVENTLOG_DEFAULT_THREAD_ID=
-# JSON-правила для eventlog (по keywords).
 EVENTLOG_RULES=[]
 
 # -----------------------------
-# Эскалация (fallback через env)
+# Эскалация
 # -----------------------------
-# Включить эскалацию (0/1).
 ESCALATION_ENABLED=0
-# Таймаут эскалации (сек).
 ESCALATION_AFTER_S=600
-# Chat ID назначения эскалации.
-ESCALATION_DEST_CHAT_ID=-1001234567890
-# Thread ID назначения эскалации (0 = без треда).
-ESCALATION_DEST_THREAD_ID=0
-# Упоминание для эскалации.
+ESCALATION_DEST_DESTINATION_ID=
+ESCALATION_DEST_THREAD_ID=
 ESCALATION_MENTION=@duty_engineer
-# Имя поля service_id для фильтра эскалации.
 ESCALATION_SERVICE_ID_FIELD=ServiceId
-# Имя поля customer_id для фильтра эскалации.
 ESCALATION_CUSTOMER_ID_FIELD=CustomerId
-# JSON-фильтр эскалации.
 ESCALATION_FILTER={}
-
-# -----------------------------
-# Admin alerts (27A)
-# -----------------------------
-# Fallback destination для алертов (если не заданы ADMIN_ALERT_*).
-ALERT_CHAT_ID=
-ALERT_THREAD_ID=
-# Chat ID админских алертов.
-ADMIN_ALERT_CHAT_ID=
-# Thread ID админских алертов.
-ADMIN_ALERT_THREAD_ID=
-# Минимальный интервал алертов (сек).
-ADMIN_ALERT_MIN_INTERVAL_S=300
 
 # -----------------------------
 # Observability (27B/27D)
 # -----------------------------
-# Интервал проверок деградации (сек).
 OBS_CHECK_INTERVAL_S=60
-# Окно для проверки rollback (сек).
 OBS_ROLLBACK_WINDOW_S=3600
-# Порог rollback для алерта.
 OBS_ROLLBACK_THRESHOLD=3
-# Интервал алертов web деградации (сек).
 OBS_WEB_ALERT_MIN_INTERVAL_S=300
-# Интервал алертов redis деградации (сек).
 OBS_REDIS_ALERT_MIN_INTERVAL_S=300
-# Интервал алертов rollback (сек).
 OBS_ROLLBACK_ALERT_MIN_INTERVAL_S=300
 
 # -----------------------------
 # Тесты (integration)
 # -----------------------------
-# URL для интеграционных тестов.
 WEB_TEST_URL=http://localhost:8000
-
-# ============================================================================
-# MATTERMOST INTEGRATION (новое)
-# Параметры для интеграции с Mattermost наряду с Telegram.
-# ============================================================================
-
-# ----------------------------
-# Mattermost Platform Settings
-# ----------------------------
-# Включить Telegram бота (1/0, по умолчанию 1).
-# Если 0 — бот не подключится к Telegram при запуске.
-TG_ENABLED=1
-
-# Включить Mattermost бота (1/0, по умолчанию 0).
-# Если 1 — бот подключится к Mattermost при запуске.
-MATTERMOST_ENABLED=0
-
-# Режим параллельной работы обеих платформ (1/0, по умолчанию 0).
-# Если 1 — все уведомления идут и в Telegram, и в Mattermost одновременно.
-# Полезно для миграции и тестирования.
-DUAL_MODE_ENABLED=0
-
-# Платформа по умолчанию (telegram/mattermost, по умолчанию telegram).
-# Используется при обработке команд от пользователей, выбравших обе платформы.
-DEFAULT_PLATFORM=telegram
-
-# ----------------------------
-# Mattermost API Configuration
-# ----------------------------
-# Полный URL Mattermost сервера (например, https://mattermost.example.com).
-# Это необходимо для всех REST API вызовов.
-MATTERMOST_API_URL=https://mattermost.example.com
-
-# Personal Access Token бота в Mattermost.
-# 1. Создайте бота в Системной консоли (Admin → Integrations → Bot Accounts)
-# 2. Выдайте ему нужные разрешения (создание постов, отправка сообщений)
-# 3. Создайте Personal Access Token для этого бота
-# Это поле ОБЯЗАТЕЛЬНО при MATTERMOST_ENABLED=1.
-MATTERMOST_BOT_TOKEN=__REPLACE_ME__
-
-# Webhook secret для валидации входящих webhooks от Mattermost.
-# Используется при получении уведомлений от ServiceDesk через Mattermost.
-# Можно оставить пусто если не используются webhook'и.
-MATTERMOST_WEBHOOK_SECRET=__OPTIONAL__
-
-# ============================================================================
-# ПРИМЕЧАНИЯ:
-# ============================================================================
-# 1. ФАЗА 1 (текущий момент): TG_ENABLED=1, MATTERMOST_ENABLED=0
-#    - Система работает только в Telegram режиме (как раньше)
-#
-# 2. ФАЗА 2 (после разработки и тестирования):
-#    TG_ENABLED=1, MATTERMOST_ENABLED=1, DUAL_MODE_ENABLED=1
-#    - Обе платформы работают параллельно
-#    - Все уведомления отправляются в обе платформы
-#    - Команды можно выполнять из обеих платформ
-#
-# 3. ФАЗА 3 (после долгого тестирования на staging):
-#    TG_ENABLED=0, MATTERMOST_ENABLED=1, DEFAULT_PLATFORM=mattermost
-#    - Telegram отключен полностью
-#    - Система работает только с Mattermost
-#
-# 4. ФАЗА 4 (через месяц на production):
-#    - Удалить Telegram код из репозитория
-#    - Оставить только Mattermost интеграцию

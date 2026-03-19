@@ -21,8 +21,8 @@ class CommandRequest:
     """
     Унифицированный запрос команды (не привязан к платформе).
 
-    Используется как промежуточное представление между aiogram.Message/MM команд и
-    платформо-независимым обработчиком команды.
+    Используется как промежуточное представление для
+    платформо-независимого обработчика команды.
     """
 
     # Информация о пользователе
@@ -33,7 +33,6 @@ class CommandRequest:
     args: Dict[str, Any] = field(default_factory=dict)  # аргументы команды
 
     # Контекст (зависит от платформы)
-    # Для Telegram: содержит aiogram Message и FSMContext
     # Для Mattermost: содержит информацию о команде из WebSocket
     context: Dict[str, Any] = field(default_factory=dict)
 
@@ -99,7 +98,7 @@ class CommandExecutor:
 
         Args:
             adapters: dict с адаптерами для каждой платформы
-                     {"telegram": TelegramMessageAdapter, "mattermost": MattermostMessageAdapter}
+                     {"mattermost": MattermostMessageAdapter}
             state_managers: dict с менеджерами состояния для каждой платформы
             db: подключение к БД (для проверки ролей, истории команд и т.д.)
             logger: логгер для отладки
@@ -256,5 +255,5 @@ class CommandExecutor:
         TODO: Реализовать проверку в БД (web.db.PlatformUser)
         """
         # На данный момент - просто трубка для интеграции с БД
-        # В будущем: SELECT role FROM platform_users WHERE telegram_id/mattermost_user_id
+        # TODO: SELECT role FROM platform_users WHERE mattermost_user_id
         return False

@@ -1,11 +1,11 @@
 """
-Главная точка сборки приложения бота.
+Главная точка сборки приложения бота (Mattermost-only).
 
 Здесь мы:
 - читаем настройки из env;
 - создаём клиентов и сервисы;
-- регистрируем хендлеры;
-- запускаем polling.
+- запускаем Mattermost WebSocket бот;
+- ожидаем stop_event для graceful shutdown.
 """
 
 from __future__ import annotations
@@ -13,15 +13,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import signal
 
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
+import aiohttp
 
 from bot.adapters.base import UserIdentity
 from bot.adapters.mattermost import MattermostMessageAdapter, MattermostStateManager
-from bot.adapters.telegram import TelegramMessageAdapter, TelegramStateManager
+from bot.adapters.mattermost_bot import MattermostBotAdapter
 from bot.config.settings import BotSettings
-from bot.handlers import commands, errors
 from bot.services.command_executor import CommandExecutor, CommandRequest
 from bot.services.config_sync import ConfigSyncService
 from bot.services.eventlog_filter_store import EventlogFilterStore
@@ -43,9 +42,6 @@ from bot.utils.web_guard import WebGuard
 
 
 def _build_state_store(settings: BotSettings) -> StateStore:
-    """
-    Создаёт state store с fallback на память.
-    """
     if settings.redis_url:
         primary = RedisStateStore(
             settings.redis_url,
@@ -59,12 +55,10 @@ def _build_state_store(settings: BotSettings) -> StateStore:
             getattr(state_store, "ping", lambda: None)()
         return state_store
 
-    # Даже без Redis используем MemoryStateStore, чтобы сохранять состояние в памяти.
     return MemoryStateStore(prefix="testci")
 
 
 async def main() -> None:
-    # Логирование настраиваем до создания клиентов, чтобы ловить все сообщения.
     settings = BotSettings.from_env()
     logging.basicConfig(
         level=settings.log_level,
@@ -101,7 +95,6 @@ async def main() -> None:
 
     user_store = UserStore(settings.database_url)
     await user_store.init_schema()
-    await user_store.init_from_env(admins=settings.tg_admins, users=settings.tg_users)
 
     seafile_store = SeafileServiceStore(settings.database_url)
     await seafile_store.init_schema()
@@ -124,74 +117,33 @@ async def main() -> None:
     runtime_config = RuntimeConfig(logger=logger, store=state_store, escalation_store_key="bot:escalation")
     config_sync = ConfigSyncService(config_client, runtime_config, logger)
 
-    bot = Bot(token=settings.token)
-    dp = Dispatcher(storage=MemoryStorage())
-
-    # Передаём зависимости в workflow_data, чтобы aiogram смог их инжектить.
-    dp.workflow_data["web_client"] = web_client
-    dp.workflow_data["web_guard"] = web_guard
-    dp.workflow_data["sd_web_client"] = sd_web_client
-    dp.workflow_data["config_client"] = config_client
-    dp.workflow_data["config_sync"] = config_sync
-    dp.workflow_data["polling_state"] = polling_state
-    dp.workflow_data["state_store"] = state_store
-    dp.workflow_data["runtime_config"] = runtime_config
-    dp.workflow_data["user_store"] = user_store
-    dp.workflow_data["seafile_store"] = seafile_store
-    dp.workflow_data["sd_api_client"] = sd_api_client
-    dp.workflow_data["eventlog_filter_store"] = eventlog_filter_store
-    dp.workflow_data["service_icon_store"] = service_icon_store
-    dp.workflow_data["config_admin_token"] = settings.config_admin_token
-    dp.workflow_data["eventlog_login"] = settings.servicedesk_login
-    dp.workflow_data["eventlog_password"] = settings.servicedesk_password
-    dp.workflow_data["eventlog_base_url"] = settings.eventlog_base_url
-    dp.workflow_data["eventlog_start_id"] = settings.eventlog_start_id
-
-    dp.errors.register(errors.on_error)
-    commands.register_handlers(dp)
-
     # ========================================================================
-    # PHASE 2: Initialize message adapters (Telegram + Mattermost support)
+    # Mattermost adapter
     # ========================================================================
 
-    adapters = {}
-    state_managers = {}
+    mattermost_session = aiohttp.ClientSession()
+    mattermost_adapter = MattermostMessageAdapter(
+        api_url=settings.mattermost_api_url,
+        bot_token=settings.mattermost_bot_token,
+        session=mattermost_session,
+        logger=logger,
+    )
 
-    # Always initialize Telegram adapter (PHASE 1 & 2 & 3)
-    if settings.tg_enabled:
-        telegram_adapter = TelegramMessageAdapter(bot=bot, logger=logger)
-        adapters["telegram"] = telegram_adapter
-        state_managers["telegram"] = TelegramStateManager(store=state_store, logger=logger)
-        logger.info("Telegram adapter initialized")
+    adapters = {"mattermost": mattermost_adapter}
+    state_managers = {"mattermost": MattermostStateManager(store=state_store, logger=logger)}
 
-    # Initialize Mattermost adapter if enabled (PHASE 2 & 3)
-    if settings.mattermost_enabled:
-        import aiohttp
+    logger.info("Mattermost adapter initialized: %s", settings.mattermost_api_url)
 
-        mattermost_session = aiohttp.ClientSession()
-        mattermost_adapter = MattermostMessageAdapter(
-            api_url=settings.mattermost_api_url,
-            bot_token=settings.mattermost_bot_token,
-            session=mattermost_session,
-            logger=logger,
-        )
-        adapters["mattermost"] = mattermost_adapter
-        state_managers["mattermost"] = MattermostStateManager(store=state_store, logger=logger)
-        logger.info("Mattermost adapter initialized: %s", settings.mattermost_api_url)
+    # ========================================================================
+    # Command executor
+    # ========================================================================
 
-    # Create unified command executor with all active adapters
     command_executor = CommandExecutor(
         adapters=adapters,
         state_managers=state_managers,
-        db=user_store,  # for admin checks and history
+        db=user_store,
         logger=logger,
     )
-    dp.workflow_data["command_executor"] = command_executor
-    dp.workflow_data["adapters"] = adapters
-
-    # ========================================================================
-    # Register command handlers and dependencies (Phase 3a: notification tests)
-    # ========================================================================
 
     # Import command implementations
     from bot.handlers.command_implementations import (
@@ -214,54 +166,47 @@ async def main() -> None:
         cmd_user_remove,
     )
 
-    # Set service dependencies that commands need
     command_executor.set_dependencies({
         "config_sync": config_sync,
         "runtime_config": runtime_config,
         "notification_service": None,  # Will be set after NotificationService is created
-        "user_store": user_store,  # For user management commands
-        "web_client": web_client,  # For config commands
+        "user_store": user_store,
+        "web_client": web_client,
         "config_admin_token": settings.config_admin_token,
-        "state_store": state_store,  # For eventlog commands
+        "state_store": state_store,
         "eventlog_filter_store": eventlog_filter_store,
-        "eventlog_login": settings.eventlog_login,
-        "eventlog_password": settings.eventlog_password,
+        "eventlog_login": settings.servicedesk_login,
+        "eventlog_password": settings.servicedesk_password,
         "eventlog_base_url": settings.eventlog_base_url,
         "eventlog_start_id": settings.eventlog_start_id,
         "service_icon_store": service_icon_store,
     })
 
-    # Register Phase 3a: Notification-testing commands
+    # Register commands
     command_executor.register_handler("routes_test", cmd_routes_test)
     command_executor.register_handler("routes_debug", cmd_routes_debug)
     command_executor.register_handler("routes_send_test", cmd_routes_send_test)
     command_executor.register_handler("escalation_send_test", cmd_escalation_send_test)
-
-    # Register Phase 3b: User management commands
     command_executor.register_handler("user_add", cmd_user_add)
     command_executor.register_handler("user_remove", cmd_user_remove)
     command_executor.register_handler("admin_add", cmd_admin_add)
     command_executor.register_handler("user_list", cmd_user_list)
     command_executor.register_handler("user_history", cmd_user_history)
     command_executor.register_handler("user_audit", cmd_user_audit)
-
-    # Register Phase 3c: Config/Admin commands
     command_executor.register_handler("config", cmd_config)
     command_executor.register_handler("config_diff", cmd_config_diff)
     command_executor.register_handler("last_eventlog_id", cmd_last_eventlog_id)
     command_executor.register_handler("eventlog_poll", cmd_eventlog_poll)
     command_executor.register_handler("service_icons", cmd_service_icons)
     command_executor.register_handler("service_icon_add", cmd_service_icon_add)
-
-    # Register Mattermost-specific commands
     command_executor.register_handler("help_mattermost", cmd_help_mattermost)
 
     # ========================================================================
-    # Observability service (unchanged)
+    # Observability service
     # ========================================================================
 
     observability = ObservabilityService(
-        bot=bot,
+        mm_adapter=mattermost_adapter,
         polling_state=polling_state,
         runtime_config=runtime_config,
         web_client=web_client,
@@ -275,139 +220,109 @@ async def main() -> None:
     )
 
     # ========================================================================
-    # Notification service - now with adapter support
+    # Notification service
     # ========================================================================
 
     notify_service = NotificationService(
-        adapters=adapters,  # NEW: pass adapters instead of bot
-        bot=bot,  # KEEP for backward compatibility, but will be deprecated
+        adapters=adapters,
         runtime_config=runtime_config,
         polling_state=polling_state,
         config_sync=config_sync,
         logger=logger,
         observability=observability,
     )
-    dp.workflow_data["notify_eventlog"] = notify_service.notify_eventlog
 
-    # Update command executor with notification_service dependency (now that it's created)
     command_executor.set_dependency("notification_service", notify_service)
 
     # ========================================================================
-    # PHASE 2+: Mattermost Bot initialization (WebSocket-based)
+    # Mattermost Bot (WebSocket)
     # ========================================================================
 
-    mattermost_bot = None
-    mattermost_bot_task = None
+    async def handle_mattermost_command(
+        command: str,
+        text: str,
+        user_id: str,
+        channel_id: str,
+        post_id: str,
+    ) -> None:
+        try:
+            user_info = await mattermost_bot.get_user_info(user_id)
+            if not user_info:
+                logger.warning("Could not get user info for %s", user_id)
+                return
 
-    if settings.mattermost_enabled and settings.mattermost_bot_token:
-        logger.info("Initializing Mattermost Bot (WebSocket)...")
+            role = await user_store.get_role_by_mm_id(user_id)
+            if role is None:
+                await mattermost_bot.send_notification(
+                    destination_id=channel_id,
+                    text="⛔ Вы не зарегистрированы. Обратитесь к администратору.",
+                    thread_id=post_id,
+                )
+                return
 
-        # Import MattermostBotAdapter only if Mattermost is enabled
-        from bot.adapters.mattermost_bot import MattermostBotAdapter
+            request = CommandRequest(
+                user=UserIdentity(
+                    user_id=user_id,
+                    platform="mattermost",
+                    username=user_info.get("username", ""),
+                ),
+                command=command,
+                raw_text=text,
+                is_admin=(role == "admin"),
+            )
 
-        async def handle_mattermost_command(
-            command: str,
-            text: str,
-            user_id: str,
-            channel_id: str,
-            post_id: str,
-        ) -> None:
-            """
-            Обработка команд из Mattermost.
+            response = await command_executor.execute(request)
 
-            Вызывается из WebSocket listener для каждой новой команды.
-            """
-            try:
-                # Получить информацию о пользователе
-                user_info = await mattermost_bot.get_user_info(user_id)
-                if not user_info:
-                    logger.warning(f"Could not get user info for {user_id}")
-                    return
-
-                # Проверить роль пользователя в БД
-                role = await user_store.get_role_by_mm_id(user_id)
-                if role is None:
-                    await mattermost_bot.send_notification(
-                        destination_id=channel_id,
-                        text="⛔ Вы не зарегистрированы. Обратитесь к администратору.",
-                        thread_id=post_id,
-                    )
-                    return
-
-                # Создать CommandRequest
-                request = CommandRequest(
-                    user=UserIdentity(
-                        user_id=user_id,
-                        platform="mattermost",
-                        username=user_info.get("username", ""),
-                    ),
-                    command=command,
-                    raw_text=text,
-                    is_admin=(role == "admin"),
+            if response and response.text:
+                await mattermost_bot.send_notification(
+                    destination_id=channel_id,
+                    text=response.text,
+                    thread_id=post_id,
                 )
 
-                # Выполнить команду
-                response = await command_executor.execute(request)
-
-                # Отправить ответ в канал
-                if response and response.text:
-                    await mattermost_bot.send_notification(
-                        destination_id=channel_id,
-                        text=response.text,
-                        thread_id=post_id,  # Ответить в ветку
-                    )
-
-            except Exception as e:
-                logger.error("MM command error (%s): %s", command, e)
-                with contextlib.suppress(Exception):
-                    await mattermost_bot.send_notification(
-                        destination_id=channel_id,
-                        text=f"❌ Ошибка: {type(e).__name__}: {e}",
-                        thread_id=post_id,
-                    )
-
-        mattermost_bot = MattermostBotAdapter(
-            server_url=settings.mattermost_api_url.removesuffix('/api/v4').rstrip('/'),
-            bot_token=settings.mattermost_bot_token,
-            logger=logger,
-            on_command=handle_mattermost_command,
-        )
-
-        # Запустить бота в отдельной задаче
-        async def run_mattermost_bot() -> None:
-            """Запустить Mattermost бота и слушать WebSocket."""
-            try:
-                await mattermost_bot.start()
-
-                # Отправить стартовое сообщение в канал team-town-square (по умолчанию)
-                # или в сообщение к администратору
-                await asyncio.sleep(2)  # Дать время на подключение
-
-                startup_message = (
-                    "🟢 **I'm alive!**\n\n"
-                    "ServiceBot запущен и слушает команды.\n\n"
-                    "Введите `/help_mattermost` чтобы увидеть список всех команд."
+        except Exception as e:
+            logger.error("MM command error (%s): %s", command, e)
+            with contextlib.suppress(Exception):
+                await mattermost_bot.send_notification(
+                    destination_id=channel_id,
+                    text=f"❌ Ошибка: {type(e).__name__}: {e}",
+                    thread_id=post_id,
                 )
 
-                # Попробовать отправить в town-square (основной канал)
-                with contextlib.suppress(Exception):
-                    await mattermost_bot.send_notification(
-                        destination_id=settings.mattermost_startup_channel_id or "town-square",
-                        text=startup_message,
-                    )
+    mattermost_bot = MattermostBotAdapter(
+        server_url=settings.mattermost_api_url.removesuffix('/api/v4').rstrip('/'),
+        bot_token=settings.mattermost_bot_token,
+        logger=logger,
+        on_command=handle_mattermost_command,
+    )
 
-                logger.info("✓ Mattermost Bot is running")
+    async def run_mattermost_bot() -> None:
+        try:
+            await mattermost_bot.start()
+            await asyncio.sleep(2)
 
-                # Слушаем WebSocket (это блокирующая операция)
-                # Она будет запущена в background, если мы вернёмся из start()
+            startup_message = (
+                "🟢 **I'm alive!**\n\n"
+                "ServiceBot запущен и слушает команды.\n\n"
+                "Введите `help_mattermost` чтобы увидеть список всех команд."
+            )
 
-            except Exception as e:
-                logger.error("Mattermost bot error: %s: %s", type(e).__name__, e)
+            with contextlib.suppress(Exception):
+                await mattermost_bot.send_notification(
+                    destination_id=settings.mattermost_startup_channel_id or "town-square",
+                    text=startup_message,
+                )
 
-        mattermost_bot_task = asyncio.create_task(run_mattermost_bot(), name="mattermost_bot")
-    else:
-        if settings.mattermost_enabled:
-            logger.warning("Mattermost enabled but MATTERMOST_BOT_TOKEN not set")
+            logger.info("✓ Mattermost Bot is running")
+
+        except Exception as e:
+            logger.error("Mattermost bot error: %s: %s", type(e).__name__, e)
+
+    mattermost_bot_task = asyncio.create_task(run_mattermost_bot(), name="mattermost_bot")
+
+    # ========================================================================
+    # Background tasks
+    # ========================================================================
 
     polling_task = asyncio.create_task(
         polling_open_queue_loop(
@@ -459,9 +374,6 @@ async def main() -> None:
     )
 
     async def observability_loop() -> None:
-        """
-        Периодические проверки деградации и rollback.
-        """
         while not stop_event.is_set():
             await observability.check_web()
             await observability.check_redis()
@@ -473,58 +385,47 @@ async def main() -> None:
 
     observability_task = asyncio.create_task(observability_loop(), name="observability")
 
-    # Пытаемся сразу подтянуть конфиг при старте (не обязательно, но удобно для диагностики).
     await config_sync.refresh(force=True)
 
     logger.info(
-        "Bot started. WEB_BASE_URL=%s CONFIG_URL=%s CONFIG_VERSION=%s POLL_INTERVAL_S=%s",
-        settings.web_base_url,
+        "Bot started (MM-only). MATTERMOST_API_URL=%s CONFIG_URL=%s CONFIG_VERSION=%s POLL_INTERVAL_S=%s",
+        settings.mattermost_api_url,
         settings.config_url,
         runtime_config.version,
         settings.poll_interval_s,
     )
 
+    # ========================================================================
+    # Main loop: wait for stop signal
+    # ========================================================================
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+
     try:
-        await dp.start_polling(bot)
+        await stop_event.wait()
     finally:
+        logger.info("Shutting down...")
         stop_event.set()
         polling_task.cancel()
         observability_task.cancel()
         if eventlog_task is not None:
             eventlog_task.cancel()
         getlink_task.cancel()
-        if mattermost_bot_task is not None:
-            mattermost_bot_task.cancel()
-        try:
-            await polling_task
-        except asyncio.CancelledError:
-            # Нормально: мы сами отменили фоновую задачу.
-            pass
-        try:
-            await observability_task
-        except asyncio.CancelledError:
-            pass
-        if eventlog_task is not None:
-            try:
-                await eventlog_task
-            except asyncio.CancelledError:
-                pass
-        try:
-            await getlink_task
-        except asyncio.CancelledError:
-            pass
-        if mattermost_bot_task is not None:
-            try:
-                await mattermost_bot_task
-            except asyncio.CancelledError:
-                pass
-        if mattermost_bot is not None:
-            await mattermost_bot.stop()
+        mattermost_bot_task.cancel()
+
+        for task in [polling_task, observability_task, eventlog_task, getlink_task, mattermost_bot_task]:
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        await mattermost_bot.stop()
+        await mattermost_session.close()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, asyncio.CancelledError):
-        # Нормально: процесс завершился по сигналу или отмене.
         pass

@@ -2,51 +2,49 @@
 Алерты для админов/дежурных.
 
 Содержит:
-- парсинг destination из env;
-- сборку текста алерта "нет destination".
+- парсинг destination из env (Mattermost channel);
+- сборку текста алерта.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional
-
-from bot.utils.env_helpers import EnvDestination, parse_dest_from_env
 
 
 @dataclass(frozen=True)
 class AdminAlertDestination:
     """
-    Куда слать алерты админам/дежурным.
+    Куда слать алерты админам/дежурным (Mattermost channel).
 
-    chat_id — обязательный
-    thread_id — опциональный (если чат с темами)
+    channel_id — обязательный (Mattermost channel ID)
+    thread_id — опциональный (root_id для треда)
     """
-    chat_id: int
-    thread_id: Optional[int] = None
+    channel_id: str
+    thread_id: Optional[str] = None
 
 
 def parse_admin_alert_dest_from_env() -> Optional[AdminAlertDestination]:
     """
+    Читает destination из env.
+
     Приоритет:
-    1) ADMIN_ALERT_CHAT_ID / ADMIN_ALERT_THREAD_ID
-    2) ALERT_CHAT_ID / ALERT_THREAD_ID (fallback, если используешь общий алерт-канал)
+    1) ADMIN_ALERT_CHANNEL_ID / ADMIN_ALERT_THREAD_ID
+    2) ALERT_CHANNEL_ID / ALERT_THREAD_ID (fallback)
     """
-    # Сначала пробуем отдельные переменные для admin-алертов.
-    dest = parse_dest_from_env("ADMIN_ALERT")
-    if dest is None:
-        # Иначе используем общий алерт-канал (если задан).
-        dest = parse_dest_from_env("ALERT")
-        if dest is None:
-            return None
+    channel_id = os.getenv("ADMIN_ALERT_CHANNEL_ID", "").strip()
+    if channel_id:
+        thread_id = os.getenv("ADMIN_ALERT_THREAD_ID", "").strip() or None
+        return AdminAlertDestination(channel_id=channel_id, thread_id=thread_id)
 
-    return _convert_env_dest(dest)
+    channel_id = os.getenv("ALERT_CHANNEL_ID", "").strip()
+    if channel_id:
+        thread_id = os.getenv("ALERT_THREAD_ID", "").strip() or None
+        return AdminAlertDestination(channel_id=channel_id, thread_id=thread_id)
 
-
-def _convert_env_dest(dest: EnvDestination) -> AdminAlertDestination:
-    # Явно конвертируем тип: AdminAlertDestination локален для этого модуля.
-    return AdminAlertDestination(chat_id=dest.chat_id, thread_id=dest.thread_id)
+    return None
 
 
 def fmt_ts(ts: Optional[float]) -> str:
@@ -65,13 +63,6 @@ def build_no_destination_alert_text(
     config_version: Optional[int] = None,
     config_source: Optional[str] = None,
 ) -> str:
-    """
-    Текст алерта для ситуации "тикет пришёл, а destination не найден".
-
-    Важно:
-    - Не делаем слишком много данных (чтобы не утекало лишнее в админ-чат),
-      но даём достаточно для диагностики.
-    """
     tid = ticket.get("Id") if isinstance(ticket, dict) else None
     name = ticket.get("Name") if isinstance(ticket, dict) else None
     sid = ticket.get(service_id_field) if isinstance(ticket, dict) else None
@@ -113,9 +104,6 @@ def build_web_degraded_alert_text(
     ready_error: Optional[str],
     attempts: int,
 ) -> str:
-    """
-    Алерт при деградации web (/health или /ready).
-    """
     lines = [
         "⚠️ Web деградировал",
         "",
@@ -131,9 +119,6 @@ def build_web_degraded_alert_text(
 
 
 def build_redis_degraded_alert_text(*, error: str, last_ok_ts: Optional[float]) -> str:
-    """
-    Алерт при деградации Redis/StateStore.
-    """
     lines = [
         "⚠️ Redis деградировал",
         "",
@@ -147,18 +132,15 @@ def build_redis_degraded_alert_text(*, error: str, last_ok_ts: Optional[float]) 
 
 def build_forbidden_send_alert_text(
     *,
-    chat_id: int,
-    thread_id: Optional[int],
+    channel_id: str,
+    thread_id: Optional[str],
     error: str,
     context: Optional[str] = None,
 ) -> str:
-    """
-    Алерт при невозможности отправить сообщение (бот не может писать пользователю).
-    """
     lines = [
-        "⚠️ Telegram send forbidden",
+        "⚠️ Send forbidden",
         "",
-        f"- chat_id: {chat_id}",
+        f"- channel_id: {channel_id}",
         f"- thread_id: {thread_id if thread_id is not None else '—'}",
         f"- error: {error}",
     ]
@@ -166,15 +148,12 @@ def build_forbidden_send_alert_text(
         lines.append(f"- context: {context}")
     lines += [
         "",
-        "Action: пользователь должен начать диалог с ботом (/start).",
+        "Action: проверь права бота на отправку в канал.",
     ]
     return "\n".join(lines)
 
 
 def build_rollbacks_alert_text(*, count: int, window_s: int, last_at: Optional[str]) -> str:
-    """
-    Алерт при частых rollback конфига.
-    """
     lines = [
         "⚠️ Частые rollback конфигурации",
         "",
