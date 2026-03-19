@@ -140,9 +140,14 @@ class WebClient:
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.put(url, json=data, headers=headers) as r:
-                    payload = await r.json()
+                    payload = await r.json(content_type=None)
                     if r.status >= 400:
-                        return {"ok": False, "status": r.status, "error": payload.get("error") or str(payload)}
+                        return {
+                            "ok": False,
+                            "status": r.status,
+                            "error": payload.get("error") or str(payload),
+                            "detail": payload.get("detail") or "",
+                        }
                     return {"ok": True, "status": r.status, "data": payload}
         except Exception as e:
             return {"ok": False, "error": str(e)}

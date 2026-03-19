@@ -662,12 +662,18 @@ async def cmd_config(
         return CommandResponse.success(help_text)
 
     if arg_str in {"check", "status"}:
-        await config_sync.refresh(force=False)
+        try:
+            await config_sync.refresh(force=False)
+        except Exception as e:
+            return CommandResponse.error(f"❌ Ошибка синхронизации конфига: {e}")
         summary = _get_config_summary(runtime_config)
         return CommandResponse.success(summary)
 
     if arg_str in {"reload", "refresh"}:
-        await config_sync.refresh(force=True)
+        try:
+            await config_sync.refresh(force=True)
+        except Exception as e:
+            return CommandResponse.error(f"❌ Ошибка перезагрузки конфига: {e}")
         summary = _get_config_summary(runtime_config)
         return CommandResponse.success(f"✅ Конфиг перезагружен.\n{summary}")
 
@@ -721,7 +727,11 @@ async def cmd_config(
         res = await web_client.put_config(data=data, admin_token=config_admin_token)
         if not res.get("ok"):
             err = res.get("error") or "unknown"
-            return CommandResponse.error(f"❌ Не удалось обновить конфиг\nПричина: {err}")
+            detail = res.get("detail") or (res.get("data") or {}).get("detail") or ""
+            msg = f"❌ Не удалось обновить конфиг\nПричина: {err}"
+            if detail:
+                msg += f"\nДеталь: {detail}"
+            return CommandResponse.error(msg)
 
         await config_sync.refresh(force=True)
         return CommandResponse.success(
@@ -729,7 +739,7 @@ async def cmd_config(
             f"- config: v{runtime_config.version} ({runtime_config.source})"
         )
     except Exception as e:
-        return CommandResponse.error(f"❌ Ошибка: {e}")
+        return CommandResponse.error(f"❌ Ошибка при обновлении конфига: {e}")
 
 
 async def cmd_config_diff(

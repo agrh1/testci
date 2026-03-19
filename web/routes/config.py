@@ -47,8 +47,8 @@ def get_config() -> Any:
         return jsonify(
             {
                 "version": 0,
-                "routing": {"rules": [], "default_dest": {"chat_id": None, "thread_id": None}},
-                "eventlog": {"rules": [], "default_dest": {"chat_id": None, "thread_id": None}},
+                "routing": {"rules": [], "default_dest": None},
+                "eventlog": {"rules": [], "default_dest": None},
                 "escalation": {"enabled": False},
                 "source": "fallback_no_db",
             }
@@ -59,7 +59,7 @@ def get_config() -> Any:
         return jsonify({"error": "config_read_failed", "detail": err}), 500
 
     if "eventlog" not in data:
-        data["eventlog"] = {"rules": [], "default_dest": {"chat_id": None, "thread_id": None}}
+        data["eventlog"] = {"rules": [], "default_dest": None}
 
     data["source"] = "postgres"
     return jsonify(data)
