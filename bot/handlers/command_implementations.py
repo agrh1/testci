@@ -687,6 +687,15 @@ async def cmd_config(
             if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].strip().startswith("```"):
                 raw = "\n".join(lines[1:-1]).strip()
 
+        # Mattermost заменяет прямые кавычки на типографские — нормализуем обратно
+        raw = (
+            raw
+            .replace("\u201c", '"')  # "
+            .replace("\u201d", '"')  # "
+            .replace("\u2018", "'")  # '
+            .replace("\u2019", "'")  # '
+        )
+
         data = json.loads(raw)
     except Exception as e:
         return CommandResponse.error(f"❌ JSON parse error: {e}")
