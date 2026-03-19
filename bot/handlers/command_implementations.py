@@ -666,7 +666,10 @@ async def cmd_config(
             await config_sync.refresh(force=False)
         except Exception as e:
             return CommandResponse.error(f"❌ Ошибка синхронизации конфига: {e}")
-        summary = _get_config_summary(runtime_config)
+        try:
+            summary = _get_config_summary(runtime_config)
+        except Exception as e:
+            return CommandResponse.error(f"❌ Ошибка чтения конфига: {type(e).__name__}: {e}")
         return CommandResponse.success(summary)
 
     if arg_str in {"reload", "refresh"}:
@@ -674,7 +677,10 @@ async def cmd_config(
             await config_sync.refresh(force=True)
         except Exception as e:
             return CommandResponse.error(f"❌ Ошибка перезагрузки конфига: {e}")
-        summary = _get_config_summary(runtime_config)
+        try:
+            summary = _get_config_summary(runtime_config)
+        except Exception as e:
+            return CommandResponse.error(f"❌ Конфиг обновлён, но ошибка чтения сводки: {type(e).__name__}: {e}")
         return CommandResponse.success(f"✅ Конфиг перезагружен.\n{summary}")
 
     if not arg_str:

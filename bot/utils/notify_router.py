@@ -55,7 +55,7 @@ class Destination:
     platform: str = "mattermost"
     chat_id: int = 0  # legacy, kept for config compat
     destination_id: str = ""  # Mattermost channel_id
-    thread_id: Optional[int] = None  # root_id для MM
+    thread_id: Optional[str] = None  # root_id для MM (строка)
 
 
 @dataclass(frozen=True)
@@ -357,7 +357,7 @@ def pick_destinations(
         # Сортировка: сначала по платформе, потом по destination
         return sorted(
             matched,
-            key=lambda d: (d.platform, d.destination_id or "", d.chat_id, d.thread_id or 0),
+            key=lambda d: (d.platform, d.destination_id or "", d.thread_id or ""),
         )
 
     if default_dest is None:

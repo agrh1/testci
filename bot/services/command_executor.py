@@ -214,20 +214,18 @@ class CommandExecutor:
             if response is None:
                 response = CommandResponse(text="Command executed successfully")
 
-            # 4. Отправить ответ через адаптер
-            if response.text:
-                adapter = self._adapters.get(request.user.platform)
-                if adapter:
-                    msg_id = await adapter.send_message(request.user, response.text)
-                    if self._logger and msg_id:
-                        self._logger.debug(f"Message sent to {request.user.platform}: {msg_id}")
+            # NOTE: Ответ НЕ отправляем здесь — это делает вызывающая сторона (bot_app.py).
+            # Отправка здесь приводила бы к двойной отправке (DM + ответ в канал).
 
             return response
 
         except Exception as e:
             if self._logger:
-                self._logger.error(f"Error executing command '{command}': {e}", exc_info=True)
-            return CommandResponse.error(f"❌ Error: {str(e)}")
+                self._logger.error(
+                    f"Error executing command '{command}': {type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+            return CommandResponse.error(f"❌ Error ({type(e).__name__}): {str(e)}")
 
     async def get_user_state(self, user: UserIdentity) -> Optional[Dict[str, Any]]:
         """Получить состояние пользователя (для многошаговых команд)."""

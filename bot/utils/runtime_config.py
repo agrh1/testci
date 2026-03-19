@@ -523,7 +523,7 @@ class RuntimeConfig:
                 continue
 
             mention = rule.mention or self.escalation.mention
-            key = (dest.destination_id or str(dest.chat_id), str(dest.thread_id) if dest.thread_id else None, mention)
+            key = (dest.destination_id, dest.thread_id, mention)
             action = actions.get(key)
             if action is None:
                 action = EscalationAction(dest=dest, mention=mention, items=[])

@@ -195,10 +195,10 @@ class EscalationManager:
 
     def _rule_key(self, rule: EscalationRule, idx: int) -> str:
         dest = rule.dest
-        thread = dest.thread_id if dest.thread_id is not None else 0
+        thread = dest.thread_id or ""
         flt = rule.flt
         return (
-            f"{idx}:{dest.chat_id}:{thread}:{rule.after_s}:"
+            f"{idx}:{dest.destination_id}:{thread}:{rule.after_s}:"
             f"{rule.mention or ''}:{','.join(flt.keywords)}:"
             f"{','.join(str(x) for x in flt.service_ids)}:"
             f"{','.join(str(x) for x in flt.customer_ids)}:"
