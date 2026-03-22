@@ -2,25 +2,51 @@
 
 # testCI
 
-Проект состоит из web‑сервиса и Telegram‑бота для мониторинга очереди заявок ServiceDesk (IntraService).
-Web отвечает за проксирование запросов к ServiceDesk и хранение runtime‑конфига, бот — за polling и отправку уведомлений в Telegram.
+Проект состоит из web-сервиса и бота Mattermost для мониторинга очереди заявок ServiceDesk (IntraService).
+Web отвечает за проксирование запросов к ServiceDesk и хранение runtime-конфига, бот — за polling и отправку уведомлений в Mattermost.
 
-## Состав
+## Архитектура
 
-- Web (Flask): /health, /ready, /status, /sd/open, /config*.
-- Bot (aiogram): polling очереди, routing, escalation, admin‑алерты, eventlog.
-- Postgres: хранение runtime‑конфига и истории, плюс база пользователей бота.
-- Redis: state store для polling и эскалаций (fallback в память, если Redis нет).
+```
+┌─────────────┐     ┌──────────────┐     ┌──────────────────┐
+│  Mattermost │◄────│  Bot         │────►│  Web (Flask)     │
+│  Server     │     │  (asyncio)   │     │  /health /config │
+└─────────────┘     │              │     │  /sd/open        │
+                    │  ┌──────────┐│     └────────┬─────────┘
+                    │  │ Workers: ││              │
+                    │  │ polling  ││     ┌────────▼─────────┐
+                    │  │ eventlog ││     │  ServiceDesk     │
+                    │  │ getlink  ││     │  (IntraService)  │
+                    │  └──────────┘│     └──────────────────┘
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+        ┌─────▼────┐ ┌────▼─────┐ ┌────▼─────┐
+        │ Postgres │ │  Redis   │ │ Seafile  │
+        │          │ │ (state)  │ │ (files)  │
+        └──────────┘ └──────────┘ └──────────┘
+```
+
+### Компоненты
+
+- **Web (Flask)**: `/health`, `/ready`, `/status`, `/sd/open`, `/config*`, `/users*`.
+- **Bot (asyncio + mattermostdriver)**: polling очереди, routing, escalation, admin-алерты, eventlog, Seafile-ссылки.
+- **Postgres**: runtime-конфиг и история, пользователи бота, Seafile-сервисы, eventlog-фильтры, иконки сервисов.
+- **Redis**: state store для polling и эскалаций (fallback в память, если Redis недоступен).
+- **Seafile**: файловое хранилище — создание директорий, upload/download ссылок.
 
 ## Ключевой функционал
 
-- Получение открытых заявок ServiceDesk через /sd/open.
-- Routing уведомлений по правилам и default‑destination.
+- Получение открытых заявок ServiceDesk через `/sd/open`.
+- Routing уведомлений по правилам и default-destination.
 - Эскалации при долгом ожидании.
 - Обработка eventlog ServiceDesk с отдельной веткой маршрутизации.
-- Хранение и версияция runtime‑конфига (/config).
-- Админ‑алерты при деградации web/redis или проблемах routing.
-- Автообработка заявок с категорией getlink_* (создание ссылок Seafile и скрытый комментарий).
+- Хранение и версионирование runtime-конфига (`/config`).
+- Админ-алерты при деградации web/redis или проблемах routing.
+- Автообработка заявок с категорией `getlink_*` (создание ссылок Seafile и скрытый комментарий).
+- Ручное создание upload/download ссылок Seafile через команды бота.
+- Просмотр открытых заявок SD через команду бота.
 
 ## Быстрый старт (local)
 
@@ -31,7 +57,7 @@ mkdir -p .envs
 cp env_example .envs/.env.local
 ```
 
-2) Заполните `.envs/.env.local` (см. раздел ниже).
+2) Заполните `.envs/.env.local` (см. раздел «Переменные окружения»).
 
 3) Запустите контейнеры:
 
@@ -51,188 +77,319 @@ curl -s http://localhost:8000/health
 
 ### Общие
 
-- `ENVIRONMENT` — среда: `local|staging|prod`.
-- `APP_ENV` — значение для `FLASK_ENV` в compose.
-- `APP_VERSION` — версия образа для `docker-compose.prod.yml`.
-- `GIT_SHA` — SHA коммита для /status.
-- `LOG_LEVEL` — уровень логирования бота.
-- `TZ` — таймзона контейнеров.
-- `PORT` — порт web внутри контейнера (по умолчанию 8000).
-- `APP_PORT` — порт публикации web на хосте (compose).
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `ENVIRONMENT` | Среда: `local\|staging\|prod` | `prod` |
+| `APP_ENV` | Значение для `FLASK_ENV` в compose | `prod` |
+| `APP_VERSION` | Версия образа для compose | `0.0.0` |
+| `GIT_SHA` | SHA коммита для `/status` | `unknown` |
+| `LOG_LEVEL` | Уровень логирования бота | `INFO` |
+| `TZ` | Таймзона контейнеров | `Europe/Moscow` |
+| `PORT` | Порт web внутри контейнера | `8000` |
+| `APP_PORT` | Порт публикации web на хосте (compose) | `8000` |
+
+### Mattermost (обязательно)
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `MATTERMOST_API_URL` | Полный URL Mattermost сервера | — (обязательно) |
+| `MATTERMOST_BOT_TOKEN` | Personal Access Token бота | — (обязательно) |
+| `MATTERMOST_WEBHOOK_SECRET` | Webhook secret (опционально) | — |
+| `MATTERMOST_STARTUP_CHANNEL_ID` | Channel ID для стартового сообщения | `town-square` |
+
+### Admin-алерты
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `ADMIN_ALERT_CHANNEL_ID` | Channel ID для админских алертов | — |
+| `ADMIN_ALERT_THREAD_ID` | Thread ID алертов | — |
+| `ALERT_CHANNEL_ID` | Fallback channel ID | — |
+| `ALERT_THREAD_ID` | Fallback thread ID | — |
+| `ADMIN_ALERT_MIN_INTERVAL_S` | Rate-limit алертов (сек) | `300` |
 
 ### Web + ServiceDesk
 
-- `SERVICEDESK_BASE_URL` — корневой URL IntraService.
-- `SERVICEDESK_LOGIN` / `SERVICEDESK_PASSWORD` — Basic Auth.
-- `SERVICEDESK_TIMEOUT_S` — таймаут запросов к ServiceDesk.
-- `TELEGRAM_BOT_TOKEN` — нужен web для readiness (проверка env).
-- `STRICT_READINESS` — строгая проверка env в /ready (1/0).
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `SERVICEDESK_BASE_URL` | Корневой URL IntraService | — (обязательно) |
+| `SERVICEDESK_LOGIN` | Логин (Basic Auth) | — (обязательно) |
+| `SERVICEDESK_PASSWORD` | Пароль (Basic Auth) | — (обязательно) |
+| `SERVICEDESK_TIMEOUT_S` | Таймаут запросов к ServiceDesk | `10` |
+| `STRICT_READINESS` | Строгая проверка env в `/ready` | `1` |
 
-### Bot ↔ Web
+### Bot <-> Web
 
-- `WEB_BASE_URL` — базовый URL web‑сервиса для бота.
-- `WEB_TIMEOUT_S` — таймаут запросов к web (/health,/ready,/config).
-- `WEB_CACHE_TTL_S` — TTL кэша проверок web.
-- `SD_WEB_TIMEOUT_S` — таймаут запроса /sd/open.
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `WEB_BASE_URL` | Базовый URL web-сервиса для бота | — |
+| `WEB_TIMEOUT_S` | Таймаут запросов к web | `1.5` |
+| `WEB_CACHE_TTL_S` | TTL кэша проверок web | `3.0` |
+| `SD_WEB_TIMEOUT_S` | Таймаут запроса `/sd/open` | `3` |
 
-### Runtime‑config (web /config)
+### Runtime-конфиг (web /config)
 
-- `CONFIG_URL` — полный URL до /config (по умолчанию `{WEB_BASE_URL}/config`).
-- `CONFIG_TOKEN` — токен на чтение /config (X‑Config‑Token).
-- `CONFIG_ADMIN_TOKEN` — токен админа для изменения /config (X‑Admin‑Token).
-- `CONFIG_TTL_S` — TTL кэша конфига у бота.
-- `CONFIG_TIMEOUT_S` — таймаут запроса /config.
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `CONFIG_URL` | Полный URL до `/config` | `{WEB_BASE_URL}/config` |
+| `CONFIG_TOKEN` | Токен на чтение `/config` (X-Config-Token) | — |
+| `CONFIG_ADMIN_TOKEN` | Токен админа для изменения `/config` (X-Admin-Token) | — |
+| `CONFIG_TTL_S` | TTL кэша конфига у бота | `60` |
+| `CONFIG_TIMEOUT_S` | Таймаут запроса `/config` | `2.5` |
 
 ### База данных (Postgres)
 
-- `DATABASE_URL` — строка подключения (обязательна для бота).
-- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — для compose‑контейнера.
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `DATABASE_URL` | Строка подключения (обязательна для бота) | — |
+| `POSTGRES_DB` | Имя БД для compose-контейнера | `testci` |
+| `POSTGRES_USER` | Пользователь БД | `testci` |
+| `POSTGRES_PASSWORD` | Пароль БД | — |
 
 ### Redis
 
-- `REDIS_URL` — если задан, state store будет в Redis.
-- `REDIS_SOCKET_TIMEOUT_S`, `REDIS_CONNECT_TIMEOUT_S` — таймауты Redis.
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `REDIS_URL` | URL Redis (если задан, state store в Redis) | — |
+| `REDIS_SOCKET_TIMEOUT_S` | Таймаут сокета Redis | `1.0` |
+| `REDIS_CONNECT_TIMEOUT_S` | Таймаут подключения Redis | `1.0` |
 
 ### Polling и лимиты
 
-- `POLL_INTERVAL_S` — интервал опроса очереди.
-- `POLL_MAX_BACKOFF_S` — максимальный backoff при ошибках.
-- `MIN_NOTIFY_INTERVAL_S` — минимальный интервал между уведомлениями.
-- `MAX_ITEMS_IN_MESSAGE` — максимум заявок в одном сообщении.
-- `GETLINK_POLL_INTERVAL_S` — интервал проверки заявок с getlink_*.
-- `GETLINK_LOOKBACK_S` — окно поиска изменённых заявок (секунды).
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `POLL_INTERVAL_S` | Интервал опроса очереди | `30` |
+| `POLL_MAX_BACKOFF_S` | Максимальный backoff при ошибках | `300` |
+| `MIN_NOTIFY_INTERVAL_S` | Минимальный интервал между уведомлениями | `60` |
+| `MAX_ITEMS_IN_MESSAGE` | Максимум заявок в одном сообщении | `10` |
+| `GETLINK_POLL_INTERVAL_S` | Интервал проверки заявок с `getlink_*` | `60` |
+| `GETLINK_LOOKBACK_S` | Окно поиска изменённых заявок (секунды) | `120` |
 
 ### Eventlog
 
-- `EVENTLOG_ENABLED` — включить обработку eventlog.
-- `EVENTLOG_BASE_URL` — базовый URL (если отличается от ServiceDesk).
-- `EVENTLOG_POLL_INTERVAL_S` — интервал опроса при отсутствии событий.
-- `EVENTLOG_KEEPALIVE_EVERY` — через сколько циклов писать keep‑alive.
-- `EVENTLOG_START_ID` — стартовый event_id (0 = последний существующий).
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `EVENTLOG_ENABLED` | Включить обработку eventlog (1/0) | `1` |
+| `EVENTLOG_BASE_URL` | Базовый URL (если отличается от ServiceDesk) | — |
+| `EVENTLOG_POLL_INTERVAL_S` | Интервал опроса при отсутствии событий | `600` |
+| `EVENTLOG_KEEPALIVE_EVERY` | Через сколько циклов писать keep-alive | `48` |
+| `EVENTLOG_START_ID` | Стартовый event_id (0 = последний существующий) | `0` |
 
 Поведение eventlog-воркера:
 - `last_event_id` хранится в state store (`bot:eventlog`) и может быть изменён на лету через `/last_eventlog_id set <id>`.
 - Воркер перечитывает `last_event_id` на каждом цикле и подхватывает новое значение (включая «откат» назад).
-- Мягкий догон: если подряд 3 раза нет события для `next_id`, воркер проверяет `last_item` и прыгает к нему (обрабатывая самый свежий ID).
+- Мягкий догон: если подряд 3 раза нет события для `next_id`, воркер проверяет `last_item` и прыгает к нему.
 
-### Routing (fallback через env)
+### Routing (Mattermost destinations)
 
-- `ROUTES_DEFAULT_CHAT_ID`, `ROUTES_DEFAULT_THREAD_ID` — destination по умолчанию.
-- `ROUTES_SERVICE_ID_FIELD`, `ROUTES_CUSTOMER_ID_FIELD` — имена полей в заявке.
-- `ROUTES_CREATOR_ID_FIELD`, `ROUTES_CREATOR_COMPANY_ID_FIELD` — имена полей CreatorId/CreatorCompanyId.
-- `ROUTES_RULES` — JSON с правилами маршрутизации.
+| Переменная | Описание |
+|---|---|
+| `ROUTES_DEFAULT_DESTINATION_ID` | Channel ID назначения по умолчанию |
+| `ROUTES_DEFAULT_THREAD_ID` | Thread ID по умолчанию |
+| `ROUTES_SERVICE_ID_FIELD` | Имя поля ServiceId в заявке |
+| `ROUTES_CUSTOMER_ID_FIELD` | Имя поля CustomerId в заявке |
+| `ROUTES_CREATOR_ID_FIELD` | Имя поля CreatorId в заявке |
+| `ROUTES_CREATOR_COMPANY_ID_FIELD` | Имя поля CreatorCompanyId |
+| `ROUTES_RULES` | JSON-правила маршрутизации |
 
 Пример `ROUTES_RULES`:
 
 ```json
 [
   {
-    "dest": {"chat_id": -100111, "thread_id": 10},
+    "dest": {"destination_id": "channel_id_here", "thread_id": "root_post_id"},
     "keywords": ["VIP", "P1"],
     "service_ids": [101, 102],
-    "customer_ids": [5001],
-    "creator_ids": [7001],
-    "creator_company_ids": [9001]
+    "customer_ids": [5001]
   }
 ]
 ```
 
-### Эскалации (fallback через env)
+### Эскалации
 
-- `ESCALATION_ENABLED` — включить эскалацию (1/0).
-- `ESCALATION_AFTER_S` — через сколько секунд эскалировать.
-- `ESCALATION_DEST_CHAT_ID`, `ESCALATION_DEST_THREAD_ID` — destination эскалации.
-- `ESCALATION_MENTION` — базовый mention.
-- `ESCALATION_SERVICE_ID_FIELD`, `ESCALATION_CUSTOMER_ID_FIELD` — поля фильтра.
-- `ESCALATION_CREATOR_ID_FIELD`, `ESCALATION_CREATOR_COMPANY_ID_FIELD` — поля CreatorId/CreatorCompanyId.
-- `ESCALATION_RULES` — JSON‑правила эскалации (если задано, перекрывает ESCALATION_FILTER).
-- `ESCALATION_FILTER` — JSON‑фильтр (keywords/service_ids/customer_ids/creator_ids/creator_company_ids).
+| Переменная | Описание |
+|---|---|
+| `ESCALATION_ENABLED` | Включить эскалацию (1/0) |
+| `ESCALATION_AFTER_S` | Через сколько секунд эскалировать |
+| `ESCALATION_DEST_DESTINATION_ID` | Channel ID назначения эскалации |
+| `ESCALATION_DEST_THREAD_ID` | Thread ID эскалации |
+| `ESCALATION_MENTION` | Базовый mention (`@duty_engineer`) |
+| `ESCALATION_SERVICE_ID_FIELD` | Поле ServiceId |
+| `ESCALATION_CUSTOMER_ID_FIELD` | Поле CustomerId |
+| `ESCALATION_FILTER` | JSON-фильтр |
 
-Пример `ESCALATION_FILTER`:
+### Eventlog routing
 
-```json
-{
-  "keywords": ["VIP", "P1"],
-  "service_ids": [101, 102],
-  "customer_ids": [5001],
-  "creator_ids": [7001],
-  "creator_company_ids": [9001]
-}
-```
+| Переменная | Описание |
+|---|---|
+| `EVENTLOG_DEFAULT_DESTINATION_ID` | Channel ID по умолчанию |
+| `EVENTLOG_DEFAULT_THREAD_ID` | Thread ID по умолчанию |
+| `EVENTLOG_RULES` | JSON с правилами для eventlog |
 
-Пример `ESCALATION_RULES`:
+### Observability
 
-```json
-[
-  {
-    "dest": {"chat_id": -100333, "thread_id": 2},
-    "after_s": 1800,
-    "mention": "@vip_duty",
-    "keywords": ["VIP"],
-    "creator_ids": [7001]
-  }
-]
-```
-
-### Eventlog routing (fallback через env)
-
-- `EVENTLOG_DEFAULT_CHAT_ID`, `EVENTLOG_DEFAULT_THREAD_ID` — destination по умолчанию.
-- `EVENTLOG_RULES` — JSON с правилами для eventlog (тот же формат, что и routing).
-- `EVENTLOG_SERVICE_ID_FIELD`, `EVENTLOG_CUSTOMER_ID_FIELD` — имена полей в заявке.
-- `EVENTLOG_CREATOR_ID_FIELD`, `EVENTLOG_CREATOR_COMPANY_ID_FIELD` — имена полей CreatorId/CreatorCompanyId.
-
-Пример `EVENTLOG_RULES`:
-
-```json
-[
-  {
-    "dest": {"chat_id": -100222, "thread_id": 5},
-    "keywords": ["Сбой", "Ошибка"]
-  }
-]
-```
-
-### Admin‑alerts и observability
-
-- `ADMIN_ALERT_CHAT_ID`, `ADMIN_ALERT_THREAD_ID` — отдельный канал алертов.
-- `ALERT_CHAT_ID`, `ALERT_THREAD_ID` — fallback, если `ADMIN_ALERT_*` не задан.
-- `ADMIN_ALERT_MIN_INTERVAL_S` — rate‑limit алертов.
-- `OBS_CHECK_INTERVAL_S` — интервал проверок деградации.
-- `OBS_ROLLBACK_WINDOW_S`, `OBS_ROLLBACK_THRESHOLD` — параметры алертов rollback.
-- `OBS_WEB_ALERT_MIN_INTERVAL_S`, `OBS_REDIS_ALERT_MIN_INTERVAL_S`, `OBS_ROLLBACK_ALERT_MIN_INTERVAL_S` — rate‑limit.
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `OBS_CHECK_INTERVAL_S` | Интервал проверок деградации | `60` |
+| `OBS_ROLLBACK_WINDOW_S` | Окно для подсчёта rollback | `3600` |
+| `OBS_ROLLBACK_THRESHOLD` | Порог алерта rollback | `3` |
+| `OBS_WEB_ALERT_MIN_INTERVAL_S` | Rate-limit web-алерта | `300` |
+| `OBS_REDIS_ALERT_MIN_INTERVAL_S` | Rate-limit Redis-алерта | `300` |
+| `OBS_ROLLBACK_ALERT_MIN_INTERVAL_S` | Rate-limit rollback-алерта | `300` |
 
 ### Тесты
 
-- `WEB_TEST_URL` — URL web для integration‑тестов.
+| Переменная | Описание |
+|---|---|
+| `WEB_TEST_URL` | URL web для integration-тестов |
+
+## Миграция с Telegram на Mattermost
+
+В этом релизе код Telegram полностью удалён. Все уведомления и команды работают только через Mattermost.
+
+### Что изменилось
+
+**Удалено:**
+- `TELEGRAM_BOT_TOKEN` — больше не нужен
+- `TG_ADMINS`, `TG_USERS` — управление пользователями теперь через БД
+- `ROUTES_DEFAULT_CHAT_ID` -> `ROUTES_DEFAULT_DESTINATION_ID`
+- `EVENTLOG_DEFAULT_CHAT_ID` -> `EVENTLOG_DEFAULT_DESTINATION_ID`
+- `ESCALATION_DEST_CHAT_ID` -> `ESCALATION_DEST_DESTINATION_ID`
+- `ADMIN_ALERT_CHAT_ID` -> `ADMIN_ALERT_CHANNEL_ID`
+- Все ссылки на `chat_id` в JSON-правилах -> `destination_id`
+
+**Добавлено:**
+- `MATTERMOST_API_URL` — URL Mattermost сервера (обязательно)
+- `MATTERMOST_BOT_TOKEN` — токен бота Mattermost (обязательно)
+- `MATTERMOST_WEBHOOK_SECRET` — webhook secret (опционально)
+- `MATTERMOST_STARTUP_CHANNEL_ID` — канал стартового сообщения
+
+**Изменение формата правил routing/escalation:**
+
+Было (Telegram):
+```json
+{"dest": {"chat_id": -1001234, "thread_id": 10}}
+```
+
+Стало (Mattermost):
+```json
+{"dest": {"destination_id": "abc123channelid", "thread_id": "root_post_id"}}
+```
+
+### Миграция БД
+
+Старые таблицы `tg_users`, `tg_command_history`, `tg_user_audit` заменены на:
+- `platform_users` — роли, профиль, последняя команда
+- `mm_command_history` — история команд
+- `mm_user_audit` — аудит админских действий
+
+Таблицы создаются автоматически при старте бота (`UserStore.init_schema()`).
+
+### Настройка бота Mattermost
+
+1. Создайте бота в Mattermost: **System Console -> Integrations -> Bot Accounts**.
+2. Получите Personal Access Token.
+3. Установите `MATTERMOST_API_URL` и `MATTERMOST_BOT_TOKEN` в `.env`.
+4. Добавьте первого админа:
+
+```sql
+INSERT INTO platform_users (mattermost_user_id, role, created_at, updated_at)
+VALUES ('ваш_mattermost_user_id', 'admin', now(), now());
+```
+
+5. Узнать свой `user_id` можно командой `/whoami` (если уже добавлены как user) или в Mattermost: **Profile -> Advanced -> User ID**.
+
+## Команды бота
+
+### Пользовательские
+
+| Команда | Описание |
+|---|---|
+| `/ping` | Проверка доступности бота |
+| `/whoami` | Кто я: ID, username, имя, email, роль |
+| `/whereami` | Где я: ID и название текущего канала и team |
+| `/sd_open [limit]` | Список открытых заявок SD (до 50) |
+| `/get_link <task_id> [service_id]` | Создать upload-ссылку Seafile |
+| `/get_link_d <task_id> [service_id]` | Создать download-ссылку Seafile |
+| `/user_list [admins\|users]` | Список пользователей |
+| `/user_history <id> [limit]` | История команд пользователя |
+| `/user_audit <id> [limit]` | Audit-история |
+| `/help_mattermost` | Полная справка по командам |
+
+При вызове `/get_link` или `/get_link_d` без `service_id`:
+- Если один Seafile-сервис — используется автоматически.
+- Если несколько — бот покажет список доступных ресурсов для выбора.
+
+### Админские
+
+| Команда | Описание |
+|---|---|
+| `/status` | Подробный статус бота: config, eventlog, state store |
+| `/routes_test name="..." service_id=101` | Тест маршрутизации (без отправки) |
+| `/routes_debug name="..."` | Подробный отладочный маршрутинг |
+| `/routes_send_test name="..."` | Отправить тестовое уведомление по маршрутам |
+| `/escalation_send_test name="..."` | Тест эскалации с реальной отправкой |
+| `/user_add <id>` | Добавить пользователя |
+| `/user_remove <id>` | Удалить пользователя |
+| `/admin_add <id>` | Добавить админа |
+| `/config [? \| check \| reload \| json]` | Управление конфигом |
+| `/config_diff <from> <to>` | Diff между версиями конфига |
+| `/last_eventlog_id [set <id>]` | Показать/установить последний eventlog ID |
+| `/eventlog_poll` | Принудительный одиночный прогон eventlog |
+| `/eventlog_filters` | Показать активные фильтры eventlog |
+| `/service_icons` | Показать значки сервисов |
+| `/service_icon_add <id> <code> <icon>` | Добавить значок сервиса |
 
 ## Работа с БД
 
-### Web (runtime‑config)
+### Web (runtime-config)
 
 Web хранит конфиг бота и историю версий в таблицах:
 
 - `bot_config` — текущая версия (id=1).
 - `bot_config_history` — история изменений и rollback.
 
-Если `DATABASE_URL` не задан, web работает без БД и /config отдаёт fallback‑конфиг.
+Если `DATABASE_URL` не задан, web работает без БД и `/config` отдаёт fallback-конфиг.
 
-### Bot (user store)
+### Bot
 
-Бот хранит пользователей в Postgres:
+Бот хранит данные в Postgres (таблицы создаются автоматически):
 
-- `tg_users` — роли, профиль, последняя команда.
-- `tg_command_history` — история команд.
-- `tg_user_audit` — аудит админских действий.
+- `platform_users` — mattermost_user_id, роль (admin/user), профиль, последняя команда.
+- `mm_command_history` — история команд.
+- `mm_user_audit` — аудит админских действий.
+- `seafile_services` — Seafile-сервисы (name/base_url/repo_id/auth_token/sd_category/enabled).
+- `eventlog_filters` — фильтры eventlog (enabled/match_type/field/pattern/hits).
+- `service_icons` — значки сервисов по ServiceId.
 
 `DATABASE_URL` обязателен для запуска бота.
 
-Дополнительно:
+### Seafile-сервисы
 
-- `seafile_services` — список Seafile сервисов для /get_link, /get_link_d и авто‑getlink (name/base_url/repo_id/auth_token/username/password/sd_category/enabled; sd_category в формате `id:name` или `id|name`).
-- `eventlog_filters` — фильтры eventlog (enabled/match_type/field/pattern/hits).
-- `service_icons` — значки сервисов по ServiceId (service_code/service_name/icon/enabled).
+Пример добавления Seafile-сервиса (SQL):
 
-Пример значков сервисов (SQL):
+```sql
+INSERT INTO seafile_services (name, base_url, repo_id, auth_token, sd_category, enabled)
+VALUES
+  ('sf.example.com', 'https://sf.example.com', 'repo-uuid-here', 'Token xxx', '110:getlink_uploads', TRUE);
+```
+
+Поле `sd_category` в формате `id:name` или `id|name` — используется для автоматической привязки заявок с getlink-категорией.
+
+### Eventlog-фильтры
+
+Пример (SQL):
+
+```sql
+INSERT INTO eventlog_filters (enabled, match_type, field, pattern, comment)
+VALUES
+  (TRUE, 'contains', 'type',        'Информация. Сервисное обслуживание БД', 'legacy'),
+  (TRUE, 'regex',    'name',        '^Профиль:.*', 'regex по названию');
+```
+
+Поддерживаемые поля `field`: `type`, `description`, `name`, `date`, `any`/`*` (по всем полям).
+Типы `match_type`: `contains`, `regex`.
+
+### Значки сервисов
 
 ```sql
 INSERT INTO service_icons (service_id, service_code, service_name, icon, enabled)
@@ -241,394 +398,93 @@ VALUES
   (42, 'NET', 'Network Team', '🌐', TRUE);
 ```
 
-Примеры команд (admin):
-
-```
-/service_icons
-/service_icon_add 25 LENOVO ❗ Lenovo Support
-/eventlog_filters
-```
-
 ### Бэкапы и перенос между БД
 
-Ниже примеры для Postgres в контейнере (docker compose).
-
-Полный бэкап БД:
+Полный бэкап:
 
 ```bash
-docker compose -f prod/docker-compose.prod.yml exec -T postgres \
-  pg_dump -U testci -d testci > /tmp/prod_full_dump.sql
+docker compose exec -T postgres pg_dump -U testci -d testci > /tmp/full_dump.sql
 ```
 
-Полный restore (осторожно, перезапишет данные):
+Выборочный дамп конфиг-таблиц:
 
 ```bash
-docker compose -f prod/docker-compose.prod.yml exec -T postgres \
-  psql -U testci -d testci < /tmp/prod_full_dump.sql
-```
-
-Перенос конфиг‑таблиц между БД (dump в формате INSERT, чтобы избежать COPY):
-
-```bash
-docker compose -f test/docker-compose.test.yml exec -T postgres \
+docker compose exec -T postgres \
   pg_dump -U testci -d testci --data-only --inserts --column-inserts \
   --table=bot_config --table=bot_config_history \
   --table=eventlog_filters --table=seafile_services \
-  > /tmp/test_config_dump.sql
+  --table=service_icons \
+  > /tmp/config_dump.sql
 ```
 
-Создать таблицы в целевой БД (если ещё нет):
+Restore:
 
 ```bash
-docker compose -f prod/docker-compose.prod.yml exec -T postgres psql -U testci -d testci <<'SQL'
-CREATE TABLE IF NOT EXISTS eventlog_filters (
-  id SERIAL PRIMARY KEY,
-  enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  match_type TEXT NOT NULL DEFAULT 'contains',
-  field TEXT NOT NULL,
-  pattern TEXT NOT NULL,
-  comment TEXT,
-  hits BIGINT NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS seafile_services (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  base_url TEXT NOT NULL,
-  repo_id TEXT NOT NULL,
-  auth_token TEXT,
-  username TEXT,
-  password TEXT,
-  sd_category TEXT,
-  enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-SQL
+docker compose exec -T postgres \
+  psql -U testci -d testci -v ON_ERROR_STOP=1 < /tmp/config_dump.sql
 ```
-
-Вариант A: перенос с очисткой (перезапись):
-
-```bash
-docker compose -f prod/docker-compose.prod.yml exec -T postgres \
-  psql -U testci -d testci -c "TRUNCATE bot_config, bot_config_history, eventlog_filters, seafile_services RESTART IDENTITY;"
-
-docker compose -f prod/docker-compose.prod.yml exec -T postgres \
-  psql -U testci -d testci -v ON_ERROR_STOP=1 < /tmp/test_config_dump.sql
-```
-
-Вариант B: перенос без очистки (добавление):
-
-```bash
-docker compose -f prod/docker-compose.prod.yml exec -T postgres \
-  psql -U testci -d testci -v ON_ERROR_STOP=1 < /tmp/test_config_dump.sql
-```
-
-Пример фильтров eventlog (SQL):
-
-```sql
-INSERT INTO eventlog_filters (enabled, match_type, field, pattern, comment)
-VALUES
-  (TRUE, 'contains', 'type',        'Информация. Сервисное обслуживание БД', 'legacy'),
-  (TRUE, 'contains', 'description', 'Заявка не создана. Письмо распознано как служебное.', 'legacy'),
-  (TRUE, 'contains', 'name',        'Пользователь Администратор удалил записи в таблицах: Task', 'legacy'),
-  (TRUE, 'regex',    'name',        '^Профиль:.*', 'regex по названию');
-```
-
-Поддерживаемые поля `field`:
-- `type` (Тип)
-- `description` (Описание)
-- `name` (Название)
-- `date` (Дата)
-- `any` или `*` (по всем полям)
-
-Поддерживаемые типы `match_type`:
-- `contains`
-- `regex`
 
 ## Работа с Redis
 
-Redis используется как state store. Ключи с префиксом `testci:`
+Redis используется как state store. Ключи с префиксом `testci:`:
 
-- `bot:polling_state` — состояние polling.
 - `bot:open_queue` — состояние очереди.
 - `bot:escalation` — состояние эскалаций.
-- `bot:eventlog` — last_event_id для eventlog.
+- `bot:eventlog` — `last_event_id` для eventlog.
 
-Если `REDIS_URL` не задан, используется in‑memory хранилище (без сохранения между рестартами).
+Если `REDIS_URL` не задан, используется in-memory хранилище (без сохранения между рестартами).
 
-## Команды бота (user)
+## /config: управление runtime-конфигом
 
-- `/get_link` — ссылка на загрузку логов (создаёт каталог при необходимости).
-- `/get_link_d` — ссылка на скачивание логов из существующего каталога (срок 7 дней, пароль генерируется).
-
-## Команды бота (admin)
-
-- `/last_eventlog_id [set <id>]` — показать/установить последний обработанный eventlog id.
-- `/eventlog_poll` — принудительный одиночный прогон eventlog.
-- `/eventlog_filters` — показать активные фильтры eventlog.
-
-## /config: эндпоинты и примеры
-
-### Команда бота /config
+### Команда бота
 
 - `/config` — показать текущий конфиг.
-- `/config ?` — справка по формату и полям.
-- `/config check` — краткая сводка по текущему runtime‑конфигу.
-- `/config reload` — принудительно перезагрузить конфиг из web.
-- `/config <json>` — полностью заменить конфиг (bot делает PUT /config).
+- `/config ?` — справка.
+- `/config check` — краткая сводка.
+- `/config reload` — принудительно перезагрузить из web.
+- `/config <json>` — полностью заменить конфиг (PUT /config).
 
-Важно: обновление полностью заменяет конфиг. Чтобы изменить одно поле —
-сначала получите текущий `/config`, затем отредактируйте JSON.
+Обновление полностью заменяет конфиг. Чтобы изменить одно поле — получите текущий `/config`, отредактируйте JSON, отправьте обратно.
 
-### Схема конфига (полная форма)
+### Схема конфига
 
-Топ‑уровень:
-- `routing` (обязательный)
-- `escalation` (обязательный)
-- `eventlog` (опционально, если нет — наследуется от routing)
-- `version`, `source` (можно передавать, бот их удалит)
+Топ-уровень: `routing` (обязательный), `escalation` (обязательный), `eventlog` (опционально).
 
 `routing`:
-- `rules`: список правил (может быть `[]`)
-  - `name` (string, опционально)
-  - `enabled` (bool, опционально)
-  - `dest` (обязательный): `{chat_id, thread_id}`
-  - `keywords` (list[str], опционально)
-  - `service_ids` (list[int], опционально)
-  - `customer_ids` (list[int], опционально)
-  - `creator_ids` (list[int], опционально)
-  - `creator_company_ids` (list[int], опционально)
-- `default_dest`: `{chat_id, thread_id}` (опционально)
-- `service_id_field` (string, опционально)
-- `customer_id_field` (string, опционально)
-- `creator_id_field` (string, опционально)
-- `creator_company_id_field` (string, опционально)
+- `rules`: список правил
+  - `name`, `enabled` (опционально)
+  - `dest`: `{"destination_id": "...", "thread_id": "..."}` (обязательно)
+  - `keywords`, `service_ids`, `customer_ids`, `creator_ids`, `creator_company_ids` (опционально)
+- `default_dest`: `{"destination_id": "...", "thread_id": "..."}` (опционально)
+- `service_id_field`, `customer_id_field`, `creator_id_field`, `creator_company_id_field` (опционально)
 
 `escalation`:
-- `enabled` (bool)
-- `after_s` (int, если enabled=true)
-- `mention` (string, например `@duty_engineer`) — базовый mention
-- `rules` (опционально): список правил
-  - `name` (string, опционально)
-  - `enabled` (bool, опционально)
-  - `dest` (опционально): `{chat_id, thread_id}`
-  - `after_s` (int, опционально) — переопределяет базовый `after_s`
-  - `mention` (string, опционально)
-  - `keywords` (list[str], опционально)
-  - `service_ids` (list[int], опционально)
-  - `customer_ids` (list[int], опционально)
-  - `creator_ids` (list[int], опционально)
-  - `creator_company_ids` (list[int], опционально)
-- `dest` + `filter` (устаревший одиночный режим, если `rules` не задан)
-- `service_id_field` (string, опционально)
-- `customer_id_field` (string, опционально)
-- `creator_id_field` (string, опционально)
-- `creator_company_id_field` (string, опционально)
+- `enabled` (bool), `after_s` (int), `mention` (string)
+- `rules` (опционально): список правил с переопределениями `dest`, `mention`, `after_s`
+- `service_id_field`, `customer_id_field` и т.д. (опционально)
 
-`eventlog`:
-- `rules` (тот же формат, что и `routing.rules`)
-- `default_dest`: `{chat_id, thread_id}` (опционально)
-- `service_id_field` (string, опционально)
-- `customer_id_field` (string, опционально)
-- `creator_id_field` (string, опционально)
-- `creator_company_id_field` (string, опционально)
+`eventlog`: тот же формат, что и `routing`.
 
-Примечания по переопределениям:
-- В `escalation.rules` можно переопределять `dest`, `mention`, `after_s`. Если поле не задано — берётся базовое из `escalation`.
-- В `routing`/`eventlog` поля `*_field` задаются только на верхнем уровне и применяются ко всем правилам.
-- В `routing.rules` `dest` обязателен; в `eventlog.rules` тоже.
-
-### Получить конфиг
+### HTTP API
 
 ```bash
+# Получить конфиг
 curl -s -H "X-Config-Token: <token>" http://localhost:8000/config
-```
 
-### Обновить конфиг
-
-```bash
+# Обновить конфиг
 curl -s -X PUT \
   -H "Content-Type: application/json" \
   -H "X-Admin-Token: <admin_token>" \
-  -d '{"routing": {"rules": [], "default_dest": {"chat_id": -1001}}, "eventlog": {"rules": [], "default_dest": {"chat_id": -1001}}, "escalation": {"enabled": false}}' \
+  -d '{"routing": {"rules": [], "default_dest": {"destination_id": "ch_id"}}, "escalation": {"enabled": false}}' \
   http://localhost:8000/config
-```
 
-Пример расширенного конфига:
-
-```json
-{
-  "version": 0,
-  "routing": {
-    "rules": [
-      {
-        "name": "VIP routing",
-        "enabled": true,
-        "dest": {"chat_id": -100111, "thread_id": 10},
-        "keywords": ["VIP", "P1"],
-        "service_ids": [101, 102],
-        "customer_ids": [5001],
-        "creator_ids": [7001],
-        "creator_company_ids": [9001]
-      }
-    ],
-    "default_dest": {"chat_id": -1001234567890, "thread_id": null},
-    "service_id_field": "ServiceId",
-    "customer_id_field": "CustomerId",
-    "creator_id_field": "CreatorId",
-    "creator_company_id_field": "CreatorCompanyId"
-  },
-  "eventlog": {
-    "rules": [
-      {
-        "name": "Eventlog errors",
-        "enabled": true,
-        "dest": {"chat_id": -100222, "thread_id": 5},
-        "keywords": ["Сбой", "Ошибка"],
-        "service_ids": [101]
-      }
-    ],
-    "default_dest": {"chat_id": -1001234567890, "thread_id": null},
-    "service_id_field": "ServiceId",
-    "customer_id_field": "CustomerId",
-    "creator_id_field": "CreatorId",
-    "creator_company_id_field": "CreatorCompanyId"
-  },
-  "escalation": {
-    "enabled": true,
-    "after_s": 900,
-    "dest": {"chat_id": -100333, "thread_id": 2},
-    "mention": "@duty_engineer",
-    "rules": [
-      {
-        "name": "VIP escalation",
-        "dest": {"chat_id": -100333, "thread_id": 2},
-        "after_s": 1800,
-        "mention": "@vip_duty",
-        "keywords": ["VIP", "P1"],
-        "service_ids": [101],
-        "creator_ids": [7001]
-      }
-    ],
-    "service_id_field": "ServiceId",
-    "customer_id_field": "CustomerId",
-    "creator_id_field": "CreatorId",
-    "creator_company_id_field": "CreatorCompanyId"
-  }
-}
-```
-
-Пример полного конфига (несколько правил и переопределения в эскалациях):
-
-```json
-{
-  "routing": {
-    "rules": [
-      {
-        "name": "VIP routing",
-        "enabled": true,
-        "dest": {"chat_id": -1001901241849, "thread_id": 10},
-        "keywords": ["VIP", "P1"],
-        "service_ids": [101, 102],
-        "customer_ids": [5001],
-        "creator_ids": [7001],
-        "creator_company_ids": [9001]
-      },
-      {
-        "name": "Incident routing",
-        "enabled": true,
-        "dest": {"chat_id": -1001901241849, "thread_id": 11},
-        "keywords": ["Сбой", "Авария"],
-        "service_ids": [103],
-        "customer_ids": [],
-        "creator_ids": [],
-        "creator_company_ids": [9002]
-      }
-    ],
-    "default_dest": {"chat_id": -1001901241849, "thread_id": null},
-    "service_id_field": "ServiceId",
-    "customer_id_field": "CustomerId",
-    "creator_id_field": "CreatorId",
-    "creator_company_id_field": "CreatorCompanyId"
-  },
-  "eventlog": {
-    "rules": [
-      {
-        "name": "Eventlog errors",
-        "enabled": true,
-        "dest": {"chat_id": -1001901241849, "thread_id": 4},
-        "keywords": ["Ошибка", "Сбой"],
-        "service_ids": [101],
-        "customer_ids": [],
-        "creator_ids": [],
-        "creator_company_ids": []
-      }
-    ],
-    "default_dest": {"chat_id": -1001901241849, "thread_id": 4},
-    "service_id_field": "ServiceId",
-    "customer_id_field": "CustomerId",
-    "creator_id_field": "CreatorId",
-    "creator_company_id_field": "CreatorCompanyId"
-  },
-  "escalation": {
-    "enabled": true,
-    "after_s": 3600,
-    "mention": "@duty_engineer",
-    "rules": [
-      {
-        "name": "VIP escalation",
-        "enabled": true,
-        "dest": {"chat_id": -1001901241849, "thread_id": 8432},
-        "after_s": 1800,
-        "mention": "@vip_duty",
-        "keywords": ["VIP", "P1"],
-        "service_ids": [101],
-        "customer_ids": [5001],
-        "creator_ids": [7001],
-        "creator_company_ids": []
-      },
-      {
-        "name": "Incident escalation",
-        "enabled": true,
-        "dest": {"chat_id": -1001901241849, "thread_id": 8433},
-        "after_s": 7200,
-        "mention": "",
-        "keywords": ["Авария", "Сбой"],
-        "service_ids": [],
-        "customer_ids": [],
-        "creator_ids": [],
-        "creator_company_ids": [9001]
-      },
-      {
-        "name": "Connectivity escalation",
-        "enabled": true,
-        "keywords": ["Потеря связи"],
-        "service_ids": [104],
-        "customer_ids": [],
-        "creator_ids": [],
-        "creator_company_ids": []
-      }
-    ],
-    "service_id_field": "ServiceId",
-    "customer_id_field": "CustomerId",
-    "creator_id_field": "CreatorId",
-    "creator_company_id_field": "CreatorCompanyId"
-  }
-}
-```
-
-### История и diff
-
-```bash
+# История версий
 curl -s -H "X-Admin-Token: <admin_token>" http://localhost:8000/config/history
+
+# Diff между версиями
 curl -s -H "X-Admin-Token: <admin_token>" "http://localhost:8000/config/diff?from=1&to=2"
-```
 
-### Rollback
-
-```bash
+# Rollback
 curl -s -X POST \
   -H "Content-Type: application/json" \
   -H "X-Admin-Token: <admin_token>" \
@@ -636,21 +492,88 @@ curl -s -X POST \
   http://localhost:8000/config/rollback
 ```
 
+## Структура проекта
+
+```
+├── bot/
+│   ├── adapters/
+│   │   ├── base.py                 # Базовые интерфейсы адаптеров
+│   │   ├── mattermost.py           # REST API адаптер (отправка сообщений)
+│   │   └── mattermost_bot.py       # WebSocket адаптер (приём команд)
+│   ├── bot_app.py                  # Главная точка сборки бота
+│   ├── config/
+│   │   └── settings.py             # BotSettings из env
+│   ├── handlers/
+│   │   └── command_implementations.py  # Все команды бота
+│   ├── services/
+│   │   ├── command_executor.py     # Маршрутизация команд + DI
+│   │   ├── config_sync.py          # Синхронизация runtime-конфига
+│   │   ├── eventlog_filter_store.py # Фильтры eventlog (Postgres)
+│   │   ├── eventlog_worker.py      # Фоновый воркер eventlog
+│   │   ├── getlink_worker.py       # Автосоздание Seafile-ссылок
+│   │   ├── notifications.py        # Отправка уведомлений
+│   │   ├── observability.py        # Мониторинг и алерты
+│   │   ├── seafile_store.py        # Seafile-сервисы (Postgres)
+│   │   ├── service_icon_store.py   # Иконки сервисов (Postgres)
+│   │   └── user_store.py           # Пользователи бота (Postgres)
+│   └── utils/
+│       ├── admin_alerts.py         # Форматирование алертов
+│       ├── config_client.py        # HTTP-клиент /config
+│       ├── env_helpers.py          # Парсеры env-переменных
+│       ├── escalation.py           # Логика эскалаций
+│       ├── eventlog.py             # Парсер eventlog (HTML)
+│       ├── notify_router.py        # Маршрутизация уведомлений
+│       ├── polling.py              # Polling очереди заявок
+│       ├── runtime_config.py       # In-memory runtime-конфиг
+│       ├── sd_api_client.py        # Прямой API ServiceDesk
+│       ├── sd_state.py             # Состояние очереди
+│       ├── sd_web_client.py        # Клиент /sd/open
+│       ├── seafile_client.py       # API Seafile
+│       ├── state_store.py          # Redis/Memory state store
+│       ├── web_client.py           # HTTP-клиент web-сервиса
+│       └── web_guard.py            # Проверка web-готовности
+├── web/
+│   ├── app.py                      # Flask-приложение
+│   ├── config_validation.py        # Валидация runtime-конфига
+│   ├── db.py                       # SQLAlchemy модели
+│   ├── settings.py                 # Настройки web из env
+│   ├── migrations/                 # SQL-миграции
+│   └── routes/
+│       ├── config.py               # /config endpoints
+│       └── users.py                # /users endpoints
+├── tests/                          # Pytest тесты
+├── .github/workflows/              # CI/CD
+│   ├── ci.yml                      # Линтинг + тесты
+│   ├── deploy-staging.yml          # Деплой в staging
+│   ├── deploy-prod.yml             # Деплой в prod
+│   └── release.yml                 # Релиз
+├── docker-compose.local.yml
+├── docker-compose.staging.yml
+├── docker-compose.prod.yml
+├── Dockerfile.bot
+├── Dockerfile.web
+├── requirements.txt                # Web dependencies
+├── requirements-bot.txt            # Bot dependencies
+└── env_example                     # Шаблон переменных окружения
+```
+
 ## Диагностика
 
-- `GET /health` — быстрый health‑check.
+- `GET /health` — быстрый health-check.
 - `GET /ready` — readiness с проверкой обязательных env.
 - `GET /status` — ENVIRONMENT + GIT_SHA.
-- Команда бота `/status` — состояние web/redis/config/polling.
+- Команда бота `/ping` — проверка доступности бота.
+- Команда бота `/status` — состояние config/eventlog/state store.
 
 ## Тесты
 
 ```bash
+# Линтинг
+ruff check .
+
+# Юнит-тесты
 pytest -q
-```
 
-Integration‑тесты запускаются только если задан `WEB_TEST_URL`:
-
-```bash
+# Integration-тесты (нужен запущенный web)
 WEB_TEST_URL=http://localhost:8000 pytest -q
 ```
