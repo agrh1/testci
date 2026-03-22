@@ -1210,26 +1210,47 @@ async def cmd_sd_open(
 # ============================================================================
 
 
+def _format_services_list(services, cmd: str) -> str:
+    """Форматирует список Seafile-сервисов для подсказки пользователю."""
+    lines = [
+        f"Формат: `{cmd} <task_id> <service_id>`\n",
+        "**Доступные Seafile-ресурсы:**",
+    ]
+    for s in services:
+        label = s.name or s.base_url
+        lines.append(f"- `{s.service_id}` — {label}")
+    lines.append(f"\nПример: `{cmd} 1001 {services[0].service_id}`")
+    return "\n".join(lines)
+
+
 async def cmd_get_link(
     request: CommandRequest,
     seafile_store,  # SeafileServiceStore instance
 ) -> CommandResponse:
     """
-    /get_link <task_id> [service_id] — создать директорию и ссылку на загрузку (upload) в Seafile.
-
-    Если service_id не указан, используется первый активный Seafile-сервис.
+    /get_link <task_id> <service_id> — создать директорию и ссылку на загрузку (upload) в Seafile.
     """
     import asyncio as _asyncio
 
     from bot.utils.seafile_client import getlink
 
     parts = _get_command_arg(request.raw_text or "", request.command).split()
+
+    try:
+        all_services = await seafile_store.list_services(enabled_only=True)
+    except Exception as e:
+        return CommandResponse.error(f"❌ Ошибка при получении списка сервисов: {e}")
+
+    if not all_services:
+        return CommandResponse.error("❌ Нет активных Seafile-сервисов.")
+
+    # Нет аргументов — показать подсказку
     if not parts:
-        return CommandResponse.error("Формат: /get_link <task_id> [service_id]")
+        return CommandResponse.error(_format_services_list(all_services, "/get_link"))
 
     task_id = parts[0].strip()
     if not task_id:
-        return CommandResponse.error("Формат: /get_link <task_id> [service_id]")
+        return CommandResponse.error(_format_services_list(all_services, "/get_link"))
 
     service_id_arg = _to_int(parts[1]) if len(parts) >= 2 else None
 
@@ -1237,15 +1258,20 @@ async def cmd_get_link(
         if service_id_arg is not None:
             service = await seafile_store.get_service(service_id_arg)
             if service is None:
-                return CommandResponse.error(f"❌ Seafile-сервис с id={service_id_arg} не найден.")
-            services = [service]
+                return CommandResponse.error(
+                    f"❌ Seafile-сервис с id={service_id_arg} не найден.\n\n"
+                    + _format_services_list(all_services, "/get_link")
+                )
+        elif len(all_services) == 1:
+            # Один сервис — используем его автоматически
+            service = all_services[0]
         else:
-            services = await seafile_store.list_services(enabled_only=True)
+            # Несколько сервисов — просим выбрать
+            return CommandResponse.error(
+                f"Укажите ресурс для задачи **{task_id}**:\n\n"
+                + _format_services_list(all_services, "/get_link")
+            )
 
-        if not services:
-            return CommandResponse.error("❌ Нет активных Seafile-сервисов.")
-
-        service = services[0]
         result = await _asyncio.to_thread(getlink, task_id, service)
 
         if result == "err":
@@ -1267,21 +1293,29 @@ async def cmd_get_link_d(
     seafile_store,  # SeafileServiceStore instance
 ) -> CommandResponse:
     """
-    /get_link_d <task_id> [service_id] — создать ссылку на скачивание (download) из Seafile.
-
-    Если service_id не указан, используется первый активный Seafile-сервис.
+    /get_link_d <task_id> <service_id> — создать ссылку на скачивание (download) из Seafile.
     """
     import asyncio as _asyncio
 
     from bot.utils.seafile_client import get_download_link
 
     parts = _get_command_arg(request.raw_text or "", request.command).split()
+
+    try:
+        all_services = await seafile_store.list_services(enabled_only=True)
+    except Exception as e:
+        return CommandResponse.error(f"❌ Ошибка при получении списка сервисов: {e}")
+
+    if not all_services:
+        return CommandResponse.error("❌ Нет активных Seafile-сервисов.")
+
+    # Нет аргументов — показать подсказку
     if not parts:
-        return CommandResponse.error("Формат: /get_link_d <task_id> [service_id]")
+        return CommandResponse.error(_format_services_list(all_services, "/get_link_d"))
 
     task_id = parts[0].strip()
     if not task_id:
-        return CommandResponse.error("Формат: /get_link_d <task_id> [service_id]")
+        return CommandResponse.error(_format_services_list(all_services, "/get_link_d"))
 
     service_id_arg = _to_int(parts[1]) if len(parts) >= 2 else None
 
@@ -1289,15 +1323,20 @@ async def cmd_get_link_d(
         if service_id_arg is not None:
             service = await seafile_store.get_service(service_id_arg)
             if service is None:
-                return CommandResponse.error(f"❌ Seafile-сервис с id={service_id_arg} не найден.")
-            services = [service]
+                return CommandResponse.error(
+                    f"❌ Seafile-сервис с id={service_id_arg} не найден.\n\n"
+                    + _format_services_list(all_services, "/get_link_d")
+                )
+        elif len(all_services) == 1:
+            # Один сервис — используем его автоматически
+            service = all_services[0]
         else:
-            services = await seafile_store.list_services(enabled_only=True)
+            # Несколько сервисов — просим выбрать
+            return CommandResponse.error(
+                f"Укажите ресурс для задачи **{task_id}**:\n\n"
+                + _format_services_list(all_services, "/get_link_d")
+            )
 
-        if not services:
-            return CommandResponse.error("❌ Нет активных Seafile-сервисов.")
-
-        service = services[0]
         result = await _asyncio.to_thread(get_download_link, task_id, service)
 
         status = result.get("status", "err")

@@ -1,6 +1,6 @@
 """
 Главная точка сборки приложения бота (Mattermost-only, v3).
-# rebuild: 2026-03-22.1 — add ping, status, sd_open, get_link, get_link_d, eventlog_filters commands
+# rebuild: 2026-03-22.2 — get_link/get_link_d: show available services when service_id not specified
 
 Здесь мы:
 - читаем настройки из env;
