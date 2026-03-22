@@ -1,6 +1,6 @@
 """
 Главная точка сборки приложения бота (Mattermost-only, v3).
-# rebuild: 2026-03-19.3 — fix config read token (CONFIG_TOKEN vs CONFIG_ADMIN_TOKEN)
+# rebuild: 2026-03-22.1 — add ping, status, sd_open, get_link, get_link_d, eventlog_filters commands
 
 Здесь мы:
 - читаем настройки из env;
@@ -149,14 +149,20 @@ async def main() -> None:
         cmd_config,
         cmd_config_diff,
         cmd_escalation_send_test,
+        cmd_eventlog_filters,
         cmd_eventlog_poll,
+        cmd_get_link,
+        cmd_get_link_d,
         cmd_help_mattermost,
         cmd_last_eventlog_id,
+        cmd_ping,
         cmd_routes_debug,
         cmd_routes_send_test,
         cmd_routes_test,
+        cmd_sd_open,
         cmd_service_icon_add,
         cmd_service_icons,
+        cmd_status,
         cmd_user_add,
         cmd_user_audit,
         cmd_user_history,
@@ -181,9 +187,17 @@ async def main() -> None:
         "eventlog_base_url": settings.eventlog_base_url,
         "eventlog_start_id": settings.eventlog_start_id,
         "service_icon_store": service_icon_store,
+        "sd_web_client": sd_web_client,
+        "seafile_store": seafile_store,
     })
 
     # Register commands
+    command_executor.register_handler("ping", cmd_ping)
+    command_executor.register_handler("status", cmd_status)
+    command_executor.register_handler("sd_open", cmd_sd_open)
+    command_executor.register_handler("get_link", cmd_get_link)
+    command_executor.register_handler("get_link_d", cmd_get_link_d)
+    command_executor.register_handler("eventlog_filters", cmd_eventlog_filters)
     command_executor.register_handler("routes_test", cmd_routes_test)
     command_executor.register_handler("routes_debug", cmd_routes_debug)
     command_executor.register_handler("routes_send_test", cmd_routes_send_test)
@@ -236,6 +250,7 @@ async def main() -> None:
     )
 
     command_executor.set_dependency("notification_service", notify_service)
+    command_executor.set_dependency("notify_eventlog", notify_service.notify_eventlog)
 
     # ========================================================================
     # Mattermost Bot (WebSocket)

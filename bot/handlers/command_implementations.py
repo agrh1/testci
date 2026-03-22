@@ -1056,6 +1056,320 @@ async def cmd_whereami(
 
 
 # ============================================================================
+# Ping / Status
+# ============================================================================
+
+
+async def cmd_ping(
+    request: CommandRequest,
+) -> CommandResponse:
+    """
+    /ping — проверка доступности бота.
+    """
+    return CommandResponse.success("🏓 pong")
+
+
+async def cmd_status(
+    request: CommandRequest,
+    runtime_config: RuntimeConfig,
+    config_sync: ConfigSyncService,
+    state_store,  # StateStore instance
+    eventlog_filter_store,  # EventlogFilterStore instance
+) -> CommandResponse:
+    """
+    /status — подробный статус бота: конфиг, polling, eventlog, seafile.
+    """
+    import datetime
+
+    now = time.time()
+    now_str = datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
+
+    lines = [
+        "📊 **Bot Status**",
+        f"- Time: {now_str}",
+        "",
+    ]
+
+    # Config
+    lines.append("**Config:**")
+    lines.append(f"- version: {runtime_config.version} ({runtime_config.source})")
+    routing = runtime_config.routing
+    esc = runtime_config.escalation
+    eventlog_cfg = runtime_config.eventlog
+    lines.append(f"- routing.rules: {len(routing.rules)} (default_dest={'yes' if routing.default_dest else 'no'})")
+    lines.append(f"- escalation: {'enabled' if esc.enabled else 'disabled'}, rules: {len(esc.rules)}")
+    lines.append(f"- eventlog.rules: {len(eventlog_cfg.rules)}")
+    lines.append("")
+
+    # Eventlog state
+    lines.append("**Eventlog:**")
+    if state_store is not None:
+        from bot.services.eventlog_worker import EVENTLOG_STATE_KEY
+        data = state_store.get_json(EVENTLOG_STATE_KEY) or {}
+        last_id = data.get("last_event_id")
+        updated_at = data.get("updated_at")
+        lines.append(f"- last_event_id: {last_id if last_id is not None else '—'}")
+        if updated_at:
+            ts_str = datetime.datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S")
+            lines.append(f"- updated_at: {ts_str}")
+    else:
+        lines.append("- state_store: отключен")
+    lines.append("")
+
+    # Eventlog filters
+    if eventlog_filter_store is not None:
+        try:
+            filters = await eventlog_filter_store.list_enabled()
+            lines.append(f"**Eventlog filters:** {len(filters)} active")
+        except Exception as e:
+            lines.append(f"**Eventlog filters:** ошибка ({e})")
+    lines.append("")
+
+    # State store health
+    lines.append("**State store:**")
+    if state_store is not None:
+        try:
+            if hasattr(state_store, "ping"):
+                state_store.ping()
+            lines.append("- status: ok")
+        except Exception as e:
+            lines.append(f"- status: degraded ({e})")
+    else:
+        lines.append("- status: отключен")
+
+    return CommandResponse.success("\n".join(lines))
+
+
+# ============================================================================
+# SD Open tickets
+# ============================================================================
+
+
+async def cmd_sd_open(
+    request: CommandRequest,
+    sd_web_client,  # SdWebClient instance
+    service_icon_store,  # ServiceIconStore instance
+) -> CommandResponse:
+    """
+    /sd_open [limit] — показать список открытых заявок из ServiceDesk.
+    """
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    limit = 20
+    if parts:
+        try:
+            limit = max(1, min(int(parts[0]), 50))
+        except Exception:
+            limit = 20
+
+    try:
+        result = await sd_web_client.get_open(limit=limit)
+    except Exception as e:
+        return CommandResponse.error(f"❌ Ошибка при запросе к SD: {e}")
+
+    if not result.ok:
+        return CommandResponse.error(f"❌ SD вернул ошибку: {result.error}")
+
+    if not result.items:
+        return CommandResponse.success("📋 Открытых заявок нет.")
+
+    # Получаем иконки сервисов для красивого отображения
+    icon_map: dict[int, str] = {}
+    if service_icon_store is not None:
+        try:
+            icons = await service_icon_store.list_all(limit=200)
+            for ic in icons:
+                if ic.enabled:
+                    icon_map[ic.service_id] = ic.icon
+        except Exception:
+            pass
+
+    lines = [f"📋 **Открытые заявки** ({result.count_returned} шт.)\n"]
+    for item in result.items:
+        task_id = item.get("Id") or item.get("id") or "?"
+        name = item.get("Name") or item.get("name") or "—"
+        service_name = item.get("ServiceName") or item.get("serviceName") or ""
+        service_id = item.get("ServiceId") or item.get("serviceId")
+        creator = item.get("Creator") or item.get("creator") or ""
+        url = item.get("Url") or item.get("url") or ""
+
+        icon = icon_map.get(service_id, "📌") if service_id else "📌"
+        line = f"{icon} **#{task_id}** {name}"
+        if service_name:
+            line += f" [{service_name}]"
+        if creator:
+            line += f" — {creator}"
+        if url:
+            line += f" [ссылка]({url})"
+        lines.append(line)
+
+    return CommandResponse.success("\n".join(lines))
+
+
+# ============================================================================
+# Seafile link commands (get_link, get_link_d)
+# ============================================================================
+
+
+async def cmd_get_link(
+    request: CommandRequest,
+    seafile_store,  # SeafileServiceStore instance
+) -> CommandResponse:
+    """
+    /get_link <task_id> [service_id] — создать директорию и ссылку на загрузку (upload) в Seafile.
+
+    Если service_id не указан, используется первый активный Seafile-сервис.
+    """
+    import asyncio as _asyncio
+
+    from bot.utils.seafile_client import getlink
+
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    if not parts:
+        return CommandResponse.error("Формат: /get_link <task_id> [service_id]")
+
+    task_id = parts[0].strip()
+    if not task_id:
+        return CommandResponse.error("Формат: /get_link <task_id> [service_id]")
+
+    service_id_arg = _to_int(parts[1]) if len(parts) >= 2 else None
+
+    try:
+        if service_id_arg is not None:
+            service = await seafile_store.get_service(service_id_arg)
+            if service is None:
+                return CommandResponse.error(f"❌ Seafile-сервис с id={service_id_arg} не найден.")
+            services = [service]
+        else:
+            services = await seafile_store.list_services(enabled_only=True)
+
+        if not services:
+            return CommandResponse.error("❌ Нет активных Seafile-сервисов.")
+
+        service = services[0]
+        result = await _asyncio.to_thread(getlink, task_id, service)
+
+        if result == "err":
+            return CommandResponse.error(
+                f"❌ Не удалось создать upload-ссылку для задачи {task_id} "
+                f"(сервис: {service.name or service.service_id})"
+            )
+
+        return CommandResponse.success(
+            f"📤 **Upload link** (сервис: {service.name or service.service_id})\n"
+            f"```\n{result}\n```"
+        )
+    except Exception as e:
+        return CommandResponse.error(f"❌ Ошибка: {e}")
+
+
+async def cmd_get_link_d(
+    request: CommandRequest,
+    seafile_store,  # SeafileServiceStore instance
+) -> CommandResponse:
+    """
+    /get_link_d <task_id> [service_id] — создать ссылку на скачивание (download) из Seafile.
+
+    Если service_id не указан, используется первый активный Seafile-сервис.
+    """
+    import asyncio as _asyncio
+
+    from bot.utils.seafile_client import get_download_link
+
+    parts = _get_command_arg(request.raw_text or "", request.command).split()
+    if not parts:
+        return CommandResponse.error("Формат: /get_link_d <task_id> [service_id]")
+
+    task_id = parts[0].strip()
+    if not task_id:
+        return CommandResponse.error("Формат: /get_link_d <task_id> [service_id]")
+
+    service_id_arg = _to_int(parts[1]) if len(parts) >= 2 else None
+
+    try:
+        if service_id_arg is not None:
+            service = await seafile_store.get_service(service_id_arg)
+            if service is None:
+                return CommandResponse.error(f"❌ Seafile-сервис с id={service_id_arg} не найден.")
+            services = [service]
+        else:
+            services = await seafile_store.list_services(enabled_only=True)
+
+        if not services:
+            return CommandResponse.error("❌ Нет активных Seafile-сервисов.")
+
+        service = services[0]
+        result = await _asyncio.to_thread(get_download_link, task_id, service)
+
+        status = result.get("status", "err")
+
+        if status == "missing":
+            return CommandResponse.error(
+                f"❌ Папка для задачи {task_id} не найдена в Seafile "
+                f"(сервис: {service.name or service.service_id}). "
+                f"Сначала создайте upload-ссылку через /get_link {task_id}"
+            )
+
+        if status != "ok":
+            return CommandResponse.error(
+                f"❌ Не удалось создать download-ссылку для задачи {task_id} "
+                f"(сервис: {service.name or service.service_id})"
+            )
+
+        link = result.get("link", "")
+        password = result.get("password", "")
+        existing = result.get("existing", False)
+        expire_days = result.get("expire_days", 7)
+
+        lines = [
+            f"📥 **Download link** (сервис: {service.name or service.service_id})",
+            f"- Ссылка: {link}",
+        ]
+        if password:
+            lines.append(f"- Пароль: `{password}`")
+        if existing:
+            lines.append("- _(использована существующая ссылка)_")
+        else:
+            lines.append(f"- Срок действия: {expire_days} дней")
+
+        return CommandResponse.success("\n".join(lines))
+    except Exception as e:
+        return CommandResponse.error(f"❌ Ошибка: {e}")
+
+
+# ============================================================================
+# Eventlog filters
+# ============================================================================
+
+
+async def cmd_eventlog_filters(
+    request: CommandRequest,
+    eventlog_filter_store,  # EventlogFilterStore instance
+) -> CommandResponse:
+    """
+    /eventlog_filters — показать список активных фильтров eventlog.
+    """
+    if eventlog_filter_store is None:
+        return CommandResponse.error("❌ EventlogFilterStore не настроен.")
+
+    try:
+        filters = await eventlog_filter_store.list_enabled()
+    except Exception as e:
+        return CommandResponse.error(f"❌ Ошибка при чтении фильтров: {e}")
+
+    if not filters:
+        return CommandResponse.success("Активных eventlog-фильтров нет.")
+
+    lines = [f"🔍 **Eventlog фильтры** ({len(filters)} active)\n"]
+    for f in filters:
+        lines.append(
+            f"- **#{f.filter_id}** field=`{f.field}` match=`{f.match_type}` "
+            f"pattern=`{f.pattern}` hits={f.hits}"
+        )
+
+    return CommandResponse.success("\n".join(lines))
+
+
+# ============================================================================
 # Mattermost Help Command
 # ============================================================================
 
@@ -1069,13 +1383,18 @@ async def cmd_help_mattermost(
     lines = [
         "🤖 ServiceBot - Доступные команды\n",
         "**👤 Пользовательские команды:**",
+        "- `/ping` - Проверка доступности бота",
         "- `/whoami` - Кто я: ID, username, имя, роль",
         "- `/whereami` - Где я: ID и название текущего канала и team",
+        "- `/sd_open [limit]` - Список открытых заявок SD (до 50)",
+        "- `/get_link <task_id> [service_id]` - Создать upload-ссылку Seafile",
+        "- `/get_link_d <task_id> [service_id]` - Создать download-ссылку Seafile",
         "- `/user_list [admins|users]` - Список пользователей",
         "- `/user_history <id> [limit]` - История команд пользователя",
         "- `/user_audit <id> [limit]` - Audit история",
         "",
         "**⚙️ Админские команды:**",
+        "- `/status` - Подробный статус бота",
         "- `/routes_test name=\"...\" service_id=101` - Тест маршрутизации",
         "- `/routes_debug name=\"...\"` - Подробный отладочный маршрутинг",
         "- `/routes_send_test name=\"...\"` - Отправить тестовое уведомление",
@@ -1087,6 +1406,7 @@ async def cmd_help_mattermost(
         "- `/config_diff <from> <to>` - Diff конфигов",
         "- `/last_eventlog_id [set <id>]` - Последний eventlog ID",
         "- `/eventlog_poll` - Принудительный прогон eventlog",
+        "- `/eventlog_filters` - Активные фильтры eventlog",
         "- `/service_icons` - Показать значки сервисов",
         "- `/service_icon_add <id> <code> <icon>` - Добавить значок",
         "",
