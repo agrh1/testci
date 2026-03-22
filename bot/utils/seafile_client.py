@@ -61,6 +61,10 @@ def _check_link(task_id: str, service: SeafileService, token: str) -> bool:
     result = _make_link(task_id, service, token)
     try:
         if result["error_msg"]:
+            # Папка не существует — но проверяем ещё раз перед созданием,
+            # чтобы избежать дубликатов при параллельных вызовах.
+            if _folder_exists(task_id, service, token):
+                return True
             res = _make_folder(task_id, service, token)
             if res == "success":
                 return True
