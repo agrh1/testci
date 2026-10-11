@@ -85,11 +85,9 @@ async def eventlog_loop(
                     logger.warning("eventlog keepalive send error: %s", e)
                 timer = 0
 
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_s)
-            except asyncio.TimeoutError:
-                continue
-            break
+            if await _wait_for_next_poll(stop_event, store, last_event_id, poll_interval_s):
+                break
+            continue
 
         timer = 0
         try:
@@ -98,11 +96,9 @@ async def eventlog_loop(
                 raise ValueError("eventlog: parsed event is empty")
         except Exception as e:
             logger.warning("eventlog parse error: next_id=%s err=%s", next_id, e)
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_s)
-            except asyncio.TimeoutError:
-                continue
-            break
+            if await _wait_for_next_poll(stop_event, store, last_event_id, poll_interval_s):
+                break
+            continue
         is_filtered = await _is_filtered(message, filter_store, next_id)
         if not is_filtered:
             text = (
@@ -122,6 +118,26 @@ async def eventlog_loop(
         last_event_id = next_id
         _save_last_event_id(store, last_event_id)
         logger.debug("eventlog saved last_event_id=%s", last_event_id)
+
+
+async def _wait_for_next_poll(
+    stop_event: asyncio.Event,
+    store: Optional[StateStore],
+    last_event_id: int,
+    poll_interval_s: float,
+) -> bool:
+    """Ждёт интервал, остановку или ручное изменение курсора в state store."""
+    deadline = time.monotonic() + poll_interval_s
+    remaining = poll_interval_s
+    while remaining > 0 and not stop_event.is_set():
+        stored_id = _load_last_event_id(store)
+        if stored_id is not None and stored_id > 0 and stored_id != last_event_id:
+            return False
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=min(1.0, remaining))
+        except asyncio.TimeoutError:
+            remaining = deadline - time.monotonic()
+    return stop_event.is_set()
 
 
 async def eventlog_poll_once(
@@ -179,15 +195,17 @@ async def eventlog_poll_once(
 
     if res is None:
         last_item = None
+        last_item_error = None
         try:
             last_item = await asyncio.to_thread(get_last_item, login, password, base_url)
-        except Exception:
-            last_item = None
+        except Exception as e:
+            last_item_error = str(e)
         return {
             "ok": True,
             "status": "no_item",
             "next_id": next_id,
             "last_item": last_item,
+            "last_item_error": last_item_error,
             "bootstrapped": bootstrapped,
         }
 

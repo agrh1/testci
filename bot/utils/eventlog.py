@@ -33,8 +33,7 @@ def get_item(event_id: int, login: str, password: str, base_url: str) -> Optiona
             data=payload, timeout=REQUEST_TIMEOUT_S,
         )
         if not 200 <= rs.status_code < 300:
-            logger.warning("eventlog login failed: status=%s", rs.status_code)
-            return None
+            logger.warning("eventlog login response: status=%s; checking event page", rs.status_code)
         r = session.get(
             f"{base_url.rstrip('/')}/eventlog.ivp/view/{event_id}",
             cookies=rs.cookies, timeout=REQUEST_TIMEOUT_S,
@@ -46,7 +45,12 @@ def get_item(event_id: int, login: str, password: str, base_url: str) -> Optiona
         if 200 <= r.status_code < 300:
             logger.debug("eventlog get_item ok: event_id=%s size=%s", event_id, len(r.text))
             return r.text
-        return None
+        if r.status_code == 404 and 200 <= rs.status_code < 300:
+            return None
+        raise RuntimeError(
+            f"eventlog fetch failed: login HTTP {rs.status_code}, "
+            f"event {event_id} HTTP {r.status_code}"
+        )
 
 
 def get_last_item(login: str, password: str, base_url: str) -> Optional[str]:
@@ -63,15 +67,16 @@ def get_last_item(login: str, password: str, base_url: str) -> Optional[str]:
             data=payload, timeout=REQUEST_TIMEOUT_S,
         )
         if not 200 <= rs.status_code < 300:
-            logger.warning("eventlog login failed: status=%s", rs.status_code)
-            return None
+            logger.warning("eventlog login response: status=%s; checking event list", rs.status_code)
         r = session.get(
             f"{base_url.rstrip('/')}/eventlog.ivp/list",
             cookies=rs.cookies, timeout=REQUEST_TIMEOUT_S,
         )
         logger.debug("eventlog get_last_item response: status=%s", r.status_code)
         if not 200 <= r.status_code < 300:
-            return None
+            raise RuntimeError(
+                f"eventlog list fetch failed: login HTTP {rs.status_code}, list HTTP {r.status_code}"
+            )
         text = r.text.split()
         for line in text:
             if "eventlog.ivp/view/" in line:
@@ -92,19 +97,18 @@ def parse_event(text: str) -> dict[str, str]:
     if event_body is None:
         raise ValueError("eventlog: response has no event form")
     field_names = {
-        "name": "Название", "Date": "Дата", "Type": "Тип", "description": "Описание",
+        "name": "Название", "date": "Дата", "type": "Тип", "description": "Описание",
     }
     fields = event_body.find_all("div", {"class": "field"})
     for field in fields:
-        label = field.find("label", attrs={"for": list(field_names)})
+        label = field.find(
+            "label", attrs={"for": lambda value: bool(value) and value.lower() in field_names},
+        )
         if label is None:
             continue
-        key = field_names[label["for"]]
+        key = field_names[label["for"].lower()]
         label.extract()
         event_info[key] = field.get_text(separator="\n", strip=True)
-    missing_fields = set(field_names.values()) - event_info.keys()
-    if missing_fields:
-        raise ValueError(f"eventlog: response is missing event fields: {sorted(missing_fields)}")
     if not any(event_info.values()):
         raise ValueError("eventlog: event form is empty")
     logger.debug("eventlog parse_event done: keys=%s", list(event_info.keys()))

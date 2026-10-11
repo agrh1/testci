@@ -857,6 +857,7 @@ async def cmd_eventlog_poll(
         next_id = res.get("next_id")
         bootstrapped = res.get("bootstrapped")
         last_item = res.get("last_item")
+        last_item_error = res.get("last_item_error")
         err = res.get("error") or res.get("reason")
         parse_error = res.get("parse_error")
 
@@ -867,6 +868,8 @@ async def cmd_eventlog_poll(
             lines.append(f"bootstrapped: {bootstrapped}")
         if last_item is not None:
             lines.append(f"last_item: {last_item}")
+        if last_item_error:
+            lines.append(f"last_item_error: {last_item_error}")
         if err:
             lines.append(f"error: {err}")
         if parse_error:
