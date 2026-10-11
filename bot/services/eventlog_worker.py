@@ -35,18 +35,8 @@ async def eventlog_loop(
         logger.warning("eventlog disabled: missing credentials or base_url")
         return
 
-    last_event_id = _load_last_event_id(store)
-    if last_event_id is None or last_event_id <= 0:
-        logger.info("eventlog bootstrap: no last_event_id in store")
-        last_event_id = await _bootstrap_event_id(
-            login=login,
-            password=password,
-            base_url=base_url,
-            start_event_id=start_event_id,
-        )
-        _save_last_event_id(store, last_event_id)
-        logger.info("eventlog bootstrap: last_event_id=%s", last_event_id)
-    else:
+    last_event_id = _load_last_event_id(store) or 0
+    if last_event_id > 0:
         logger.info("eventlog start: last_event_id=%s", last_event_id)
 
     timer = 0
@@ -58,6 +48,21 @@ async def eventlog_loop(
             logger.info("eventlog live override: last_event_id %s -> %s", last_event_id, stored_last_id)
             last_event_id = stored_last_id
             timer = 0
+
+        if last_event_id <= 0:
+            try:
+                last_event_id = await _bootstrap_event_id(
+                    login=login, password=password, base_url=base_url,
+                    start_event_id=start_event_id,
+                )
+            except Exception as e:
+                logger.warning("eventlog bootstrap error: %s", e)
+            if last_event_id <= 0:
+                if await _wait_for_next_poll(stop_event, store, last_event_id, poll_interval_s):
+                    break
+                continue
+            _save_last_event_id(store, last_event_id)
+            logger.info("eventlog bootstrap: last_event_id=%s", last_event_id)
 
         next_id = last_event_id + 1
         logger.debug("eventlog poll: next_id=%s", next_id)
@@ -165,12 +170,20 @@ async def eventlog_poll_once(
     last_event_id = _load_last_event_id(store)
     if last_event_id is None or last_event_id <= 0:
         bootstrapped = True
-        last_event_id = await _bootstrap_event_id(
-            login=login,
-            password=password,
-            base_url=base_url,
-            start_event_id=start_event_id,
-        )
+        try:
+            last_event_id = await _bootstrap_event_id(
+                login=login,
+                password=password,
+                base_url=base_url,
+                start_event_id=start_event_id,
+            )
+        except Exception as e:
+            return {
+                "ok": False,
+                "status": "bootstrap_failed",
+                "error": str(e),
+                "bootstrapped": bootstrapped,
+            }
         if last_event_id and last_event_id > 0:
             _save_last_event_id(store, last_event_id)
 

@@ -21,10 +21,16 @@ EVENT_HTML = '''
 </div>
 '''
 ERROR_HTML = '<html><h1>404: событие не найдено</h1></html>'
+LOGIN_HTML = '''
+<form action="/" method="post">
+<input id="login"><input id="password" type="password">
+<input name="rememberme" type="checkbox" value="True">
+</form>
+'''
 
 
-def response(status, text=""):
-    return Mock(status_code=status, text=text, history=[], cookies={})
+def response(status, text="", url="https://sd/"):
+    return Mock(status_code=status, text=text, url=url, history=[], cookies={})
 
 
 @pytest.fixture
@@ -33,47 +39,51 @@ def web_session(monkeypatch):
     session.__enter__ = Mock(return_value=session)
     session.__exit__ = Mock(return_value=False)
     session.post.return_value = response(200)
+    session.login_page = response(200, LOGIN_HTML, "https://sd/login")
+    session.event_get = Mock()
+    session.get.side_effect = lambda url, **kwargs: (
+        session.login_page if url.endswith("/login") else session.event_get(url, **kwargs)
+    )
     monkeypatch.setattr(eventlog.requests, "Session", Mock(return_value=session))
     return session
 
 
 @pytest.mark.parametrize("status", [200, 201, 206])
 def test_get_item_accepts_2xx(web_session, status):
-    web_session.get.return_value = response(status, EVENT_HTML)
+    web_session.event_get.return_value = response(status, EVENT_HTML)
     assert eventlog.get_item(42, "login", "password", "https://sd/") == EVENT_HTML
-    web_session.get.assert_called_once_with(
-        "https://sd/eventlog.ivp/view/42", cookies={}, timeout=10.0,
+    web_session.event_get.assert_called_once_with(
+        "https://sd/eventlog.ivp/view/42", timeout=10.0,
     )
-    assert web_session.post.call_args.args == ("https://sd/registertask.ivp",)
+    assert web_session.post.call_args.args == ("https://sd/",)
     assert web_session.post.call_args.kwargs["timeout"] == 10.0
 
 
 @pytest.mark.parametrize("status", [404])
 def test_get_item_rejects_non_2xx(web_session, status):
-    web_session.get.return_value = response(status, ERROR_HTML)
+    web_session.event_get.return_value = response(status, ERROR_HTML)
     assert eventlog.get_item(42, "login", "password", "https://sd") is None
 
 
 @pytest.mark.parametrize("status", [302, 401, 403, 500])
 def test_http_failure_reports_actual_status(web_session, status):
-    web_session.get.return_value = response(status, ERROR_HTML)
-    with pytest.raises(RuntimeError, match=f"event 42 HTTP {status}"):
+    web_session.event_get.return_value = response(status, ERROR_HTML)
+    with pytest.raises(RuntimeError, match=f"HTTP {status}"):
         eventlog.get_item(42, "login", "password", "https://sd")
 
 
-def test_login_error_response_does_not_hide_valid_event(web_session):
-    # Авторизация может установить cookie и закончиться на странице ошибки.
+def test_login_http_failure_stops_before_fetching_event(web_session):
     web_session.post.return_value = response(404)
-    web_session.get.return_value = response(200, EVENT_HTML)
-    assert eventlog.get_item(42, "login", "password", "https://sd") == EVENT_HTML
-    web_session.get.assert_called_once()
-
-
-def test_login_and_event_failures_report_both_statuses(web_session):
-    web_session.post.return_value = response(403)
-    web_session.get.return_value = response(404, ERROR_HTML)
-    with pytest.raises(RuntimeError, match="login HTTP 403, event 42 HTTP 404"):
+    with pytest.raises(RuntimeError, match="eventlog login failed: HTTP 404"):
         eventlog.get_item(42, "login", "password", "https://sd")
+    web_session.event_get.assert_not_called()
+
+
+def test_login_form_after_post_is_authentication_failure(web_session):
+    web_session.post.return_value = response(200, LOGIN_HTML)
+    with pytest.raises(RuntimeError, match="server returned the login form"):
+        eventlog.get_item(42, "login", "password", "https://sd")
+    web_session.event_get.assert_not_called()
 
 
 def test_parse_real_html_with_nested_description():
@@ -107,7 +117,7 @@ def test_poll_once_uses_status_and_valid_html(web_session, monkeypatch, status, 
     store = MemoryStateStore()
     store.set_json(eventlog_worker.EVENTLOG_STATE_KEY, {"last_event_id": 41})
     notify = AsyncMock()
-    web_session.get.return_value = response(status, html)
+    web_session.event_get.return_value = response(status, html)
     monkeypatch.setattr(eventlog_worker, "get_last_item", Mock(return_value="999"))
     result = asyncio.run(eventlog_worker.eventlog_poll_once(
         notify_eventlog=notify, store=store, filter_store=None,
@@ -129,7 +139,7 @@ def test_loop_waits_for_same_id_until_valid_event(web_session, monkeypatch, stat
     store.set_json(eventlog_worker.EVENTLOG_STATE_KEY, {"last_event_id": 41})
     last_item = Mock(return_value="999")
     monkeypatch.setattr(eventlog_worker, "get_last_item", last_item)
-    web_session.get.side_effect = [response(status, html) for _ in range(4)] + [response(200, EVENT_HTML)]
+    web_session.event_get.side_effect = [response(status, html) for _ in range(4)] + [response(200, EVENT_HTML)]
     wait_for = asyncio.wait_for
     polling_waits = []
 
@@ -150,8 +160,8 @@ def test_loop_waits_for_same_id_until_valid_event(web_session, monkeypatch, stat
         notify.assert_awaited_once_with("today Error\nТест\nDetails\nNext line", [{"Name": "Error Тест"}])
 
     asyncio.run(run())
-    assert len(web_session.get.call_args_list) == 5
-    assert all(call.args == ("https://sd/eventlog.ivp/view/42",) for call in web_session.get.call_args_list)
+    assert len(web_session.event_get.call_args_list) == 5
+    assert all(call.args == ("https://sd/eventlog.ivp/view/42",) for call in web_session.event_get.call_args_list)
     assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY)["last_event_id"] == 42
     last_item.assert_not_called()
     assert polling_waits == [0.001] * 4
@@ -175,7 +185,7 @@ def test_empty_parser_result_is_not_notified(monkeypatch):
 def test_request_timeout_waits_without_advancing_id(web_session):
     store = MemoryStateStore()
     store.set_json(eventlog_worker.EVENTLOG_STATE_KEY, {"last_event_id": 41})
-    web_session.get.side_effect = [requests.Timeout("timeout"), response(200, EVENT_HTML)]
+    web_session.event_get.side_effect = [requests.Timeout("timeout"), response(200, EVENT_HTML)]
 
     async def run():
         stop = asyncio.Event()
@@ -188,8 +198,8 @@ def test_request_timeout_waits_without_advancing_id(web_session):
         notify.assert_awaited_once()
 
     asyncio.run(run())
-    assert len(web_session.get.call_args_list) == 2
-    assert all(call.args == ("https://sd/eventlog.ivp/view/42",) for call in web_session.get.call_args_list)
+    assert len(web_session.event_get.call_args_list) == 2
+    assert all(call.args == ("https://sd/eventlog.ivp/view/42",) for call in web_session.event_get.call_args_list)
     assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY)["last_event_id"] == 42
 
 
@@ -200,7 +210,7 @@ def test_filtered_html_event_is_processed(web_session):
     filters = Mock()
     filters.list_enabled = AsyncMock(return_value=[EventlogFilter(1, "type", "Error", "contains", True, 0)])
     filters.increment_hits = AsyncMock()
-    web_session.get.return_value = response(200, EVENT_HTML)
+    web_session.event_get.return_value = response(200, EVENT_HTML)
     result = asyncio.run(eventlog_worker.eventlog_poll_once(
         notify_eventlog=notify, store=store, filter_store=filters,
         login="login", password="password", base_url="https://sd",
@@ -212,10 +222,10 @@ def test_filtered_html_event_is_processed(web_session):
 
 
 def test_html_list_endpoint_is_preserved(web_session):
-    web_session.get.return_value = response(200, '<a href="/eventlog.ivp/view/41">41</a>')
+    web_session.event_get.return_value = response(200, '<a href="/eventlog.ivp/view/41">41</a>')
     assert eventlog.get_last_item("login", "password", "https://sd/") == "41"
-    web_session.get.assert_called_once_with(
-        "https://sd/eventlog.ivp/list", cookies={}, timeout=10.0,
+    web_session.event_get.assert_called_once_with(
+        "https://sd/eventlog.ivp/list", timeout=10.0,
     )
 
 
@@ -297,27 +307,26 @@ def test_poll_reports_http_errors_instead_of_no_item(web_session):
     store = MemoryStateStore()
     store.set_json(eventlog_worker.EVENTLOG_STATE_KEY, {"last_event_id": 41})
     notify = AsyncMock()
-    web_session.get.return_value = response(403)
+    web_session.event_get.return_value = response(403)
     result = asyncio.run(eventlog_worker.eventlog_poll_once(
         notify_eventlog=notify, store=store, filter_store=None,
         login="login", password="password", base_url="https://sd",
     ))
     assert result["status"] == "get_item_error"
-    assert result["error"] == "eventlog fetch failed: login HTTP 200, event 42 HTTP 403"
+    assert result["error"] == "eventlog page fetch failed: HTTP 403"
     assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY)["last_event_id"] == 41
     notify.assert_not_awaited()
 
 
-def test_list_is_read_even_if_login_redirect_ends_in_404(web_session):
-    web_session.post.return_value = response(404)
-    web_session.get.return_value = response(200, '<a href="/eventlog.ivp/view/43">43</a>')
+def test_list_is_read_after_root_login_post(web_session):
+    web_session.event_get.return_value = response(200, '<a href="/eventlog.ivp/view/43">43</a>')
     assert eventlog.get_last_item("login", "password", "https://sd") == "43"
 
 
-def test_loop_reads_backlog_when_login_response_is_404(web_session):
+def test_loop_reads_backlog_after_root_login_post(web_session):
     store = MemoryStateStore()
     store.set_json(eventlog_worker.EVENTLOG_STATE_KEY, {"last_event_id": 41})
-    web_session.post.return_value = response(404)
+    web_session.post.return_value = response(200)
 
     async def run():
         stop = asyncio.Event()
@@ -331,7 +340,7 @@ def test_loop_reads_backlog_when_login_response_is_404(web_session):
             stop.set()
             return response(404, ERROR_HTML)
 
-        web_session.get.side_effect = next_response
+        web_session.event_get.side_effect = next_response
         notify = AsyncMock()
         await asyncio.wait_for(eventlog_worker.eventlog_loop(
             stop_event=stop, notify_eventlog=notify, store=store, filter_store=None,
@@ -341,7 +350,91 @@ def test_loop_reads_backlog_when_login_response_is_404(web_session):
         assert notify.await_count == 2
 
     asyncio.run(run())
-    assert [call.args[0] for call in web_session.get.call_args_list] == [
+    assert [call.args[0] for call in web_session.event_get.call_args_list] == [
         "https://sd/eventlog.ivp/view/42", "https://sd/eventlog.ivp/view/43", "https://sd/eventlog.ivp/view/44",
     ]
     assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY)["last_event_id"] == 43
+
+
+def test_login_uses_actual_form_action_and_javascript_field_ids(web_session):
+    web_session.login_page = response(200, LOGIN_HTML, "https://sd/login")
+    web_session.event_get.return_value = response(200, EVENT_HTML)
+    assert eventlog.get_item(42, "alice", "secret", "http://sd") == EVENT_HTML
+    assert web_session.get.call_args_list[0].args == ("http://sd/login",)
+    web_session.post.assert_called_once_with(
+        "https://sd/", data={"login": "alice", "password": "secret"}, timeout=10.0,
+    )
+    web_session.event_get.assert_called_once_with("https://sd/eventlog.ivp/view/42", timeout=10.0)
+
+
+def test_login_preserves_hidden_fields_and_input_names(web_session):
+    web_session.login_page = response(200, '''
+    <form action="/session/start" method="POST">
+      <input name="Login"><input name="Password" type="password">
+      <input type="hidden" name="__RequestVerificationToken" value="test-token">
+    </form>
+    ''', "https://sd/login")
+    web_session.event_get.return_value = response(200, EVENT_HTML)
+    eventlog.get_item(42, "alice", "secret", "https://sd")
+    web_session.post.assert_called_once_with(
+        "https://sd/session/start",
+        data={"Login": "alice", "Password": "secret", "__RequestVerificationToken": "test-token"},
+        timeout=10.0,
+    )
+
+
+def test_login_rejects_external_form_action(web_session):
+    web_session.login_page = response(200, LOGIN_HTML.replace('action="/"', 'action="https://other/login"'), "https://sd/login")
+    with pytest.raises(RuntimeError, match="another origin"):
+        eventlog.get_item(42, "alice", "secret", "https://sd")
+    web_session.post.assert_not_called()
+
+
+def test_event_redirect_to_login_is_fetch_error_and_preserves_cursor(web_session):
+    store = MemoryStateStore()
+    store.set_json(eventlog_worker.EVENTLOG_STATE_KEY, {"last_event_id": 217659})
+    notify = AsyncMock()
+    web_session.event_get.return_value = response(200, LOGIN_HTML, "https://sd/login")
+    result = asyncio.run(eventlog_worker.eventlog_poll_once(
+        notify_eventlog=notify, store=store, filter_store=None,
+        login="alice", password="secret", base_url="https://sd",
+    ))
+    assert result["status"] == "get_item_error"
+    assert "authentication required" in result["error"]
+    assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY)["last_event_id"] == 217659
+    notify.assert_not_awaited()
+
+
+def test_bootstrap_authentication_failure_is_diagnostic(web_session):
+    web_session.post.return_value = response(200, LOGIN_HTML)
+    notify = AsyncMock()
+    store = MemoryStateStore()
+    result = asyncio.run(eventlog_worker.eventlog_poll_once(
+        notify_eventlog=notify, store=store, filter_store=None,
+        login="alice", password="secret", base_url="https://sd",
+    ))
+    assert result["status"] == "bootstrap_failed"
+    assert "login failed" in result["error"]
+    assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY) is None
+    notify.assert_not_awaited()
+
+
+def test_bootstrap_failure_is_retried_before_processing_events(monkeypatch):
+    store = MemoryStateStore()
+    bootstrap = Mock(side_effect=[RuntimeError("login failed"), 41])
+    monkeypatch.setattr(eventlog_worker, "get_last_item", bootstrap)
+    monkeypatch.setattr(eventlog_worker, "get_item", Mock(return_value=EVENT_HTML))
+
+    async def run():
+        stop = asyncio.Event()
+        notify = AsyncMock(side_effect=lambda *_: stop.set())
+        await asyncio.wait_for(eventlog_worker.eventlog_loop(
+            stop_event=stop, notify_eventlog=notify, store=store, filter_store=None,
+            login="alice", password="secret", base_url="https://sd",
+            poll_interval_s=0.001, keepalive_every=0,
+        ), timeout=2)
+        notify.assert_awaited_once()
+
+    asyncio.run(run())
+    assert bootstrap.call_count == 2
+    assert store.get_json(eventlog_worker.EVENTLOG_STATE_KEY)["last_event_id"] == 42
