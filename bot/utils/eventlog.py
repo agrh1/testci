@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger("bot.eventlog")
+REQUEST_TIMEOUT_S = 10.0
 
 
 def get_item(event_id: int, login: str, password: str, base_url: str) -> Optional[str]:
@@ -27,10 +28,22 @@ def get_item(event_id: int, login: str, password: str, base_url: str) -> Optiona
                 "(KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
             )
         }
-        rs = session.post(f"{base_url.rstrip('/')}/registertask.ivp", headers=headers, data=payload)
-        r = session.get(f"{base_url.rstrip('/')}/eventlog.ivp/view/{event_id}", cookies=rs.cookies)
-        logger.debug("eventlog get_item response: event_id=%s status=%s", event_id, r.status_code)
-        if r.status_code == 200:
+        rs = session.post(
+            f"{base_url.rstrip('/')}/registertask.ivp", headers=headers,
+            data=payload, timeout=REQUEST_TIMEOUT_S,
+        )
+        if not 200 <= rs.status_code < 300:
+            logger.warning("eventlog login failed: status=%s", rs.status_code)
+            return None
+        r = session.get(
+            f"{base_url.rstrip('/')}/eventlog.ivp/view/{event_id}",
+            cookies=rs.cookies, timeout=REQUEST_TIMEOUT_S,
+        )
+        logger.debug(
+            "eventlog get_item response: event_id=%s status=%s redirect_statuses=%s",
+            event_id, r.status_code, [response.status_code for response in r.history],
+        )
+        if 200 <= r.status_code < 300:
             logger.debug("eventlog get_item ok: event_id=%s size=%s", event_id, len(r.text))
             return r.text
         return None
@@ -45,10 +58,19 @@ def get_last_item(login: str, password: str, base_url: str) -> Optional[str]:
                 "(KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
             )
         }
-        rs = session.post(f"{base_url.rstrip('/')}/registertask.ivp", headers=headers, data=payload)
-        r = session.get(f"{base_url.rstrip('/')}/eventlog.ivp/list", cookies=rs.cookies)
+        rs = session.post(
+            f"{base_url.rstrip('/')}/registertask.ivp", headers=headers,
+            data=payload, timeout=REQUEST_TIMEOUT_S,
+        )
+        if not 200 <= rs.status_code < 300:
+            logger.warning("eventlog login failed: status=%s", rs.status_code)
+            return None
+        r = session.get(
+            f"{base_url.rstrip('/')}/eventlog.ivp/list",
+            cookies=rs.cookies, timeout=REQUEST_TIMEOUT_S,
+        )
         logger.debug("eventlog get_last_item response: status=%s", r.status_code)
-        if r.status_code != 200:
+        if not 200 <= r.status_code < 300:
             return None
         text = r.text.split()
         for line in text:
@@ -67,18 +89,24 @@ def parse_event(text: str) -> dict[str, str]:
     event_info: dict[str, str] = {}
     soup = BeautifulSoup(text, "html.parser")
     event_body = soup.find("div", {"class": "formbody"})
-    fields = event_body.find_all("div", {"class": "field"}) if event_body else []
+    if event_body is None:
+        raise ValueError("eventlog: response has no event form")
+    field_names = {
+        "name": "Название", "Date": "Дата", "Type": "Тип", "description": "Описание",
+    }
+    fields = event_body.find_all("div", {"class": "field"})
     for field in fields:
-        if field.find("label", {"for": "name"}):
-            key = field.find("label", {"for": "name"}).text.strip()
-        if field.find("label", {"for": "Date"}):
-            key = field.find("label", {"for": "Date"}).text.strip()
-        if field.find("label", {"for": "Type"}):
-            key = field.find("label", {"for": "Type"}).text.strip()
-        if field.find("label", {"for": "description"}):
-            key = field.find("label", {"for": "description"}).text.strip()
-        event_field = field.contents[2].strip()
-        event_info[key] = event_field
+        label = field.find("label", attrs={"for": list(field_names)})
+        if label is None:
+            continue
+        key = field_names[label["for"]]
+        label.extract()
+        event_info[key] = field.get_text(separator="\n", strip=True)
+    missing_fields = set(field_names.values()) - event_info.keys()
+    if missing_fields:
+        raise ValueError(f"eventlog: response is missing event fields: {sorted(missing_fields)}")
+    if not any(event_info.values()):
+        raise ValueError("eventlog: event form is empty")
     logger.debug("eventlog parse_event done: keys=%s", list(event_info.keys()))
     return event_info
 
